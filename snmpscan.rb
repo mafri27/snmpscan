@@ -33,7 +33,7 @@ end
 
 r_opt = []    #Array fuer reg exp
 h_opt = nil   #Host
-e_opt = nil   #Host
+e_opt = nil   # display Interface errors
 c_opt = nil   #Comunity
 m_opt = "no"  # default nichts markieren
 u_opt = true  # default nichts markieren
