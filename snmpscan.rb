@@ -9,7 +9,7 @@ def show_help
     puts "                                                                   "
     puts "  #{$0} -c <community> -h <Host> [options]                         "
     puts "                                                                   "
-    puts "  SNMPSCAN mafri-edition version 1.6.2                             "
+    puts "  SNMPSCAN version 1.6.2                                           "
     puts "                                                                   "
     puts "  -h            IP-address or the Hostname of the Targetsystem     "
     puts "  -c            SNMP community                                     "
