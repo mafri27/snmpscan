@@ -27,7 +27,7 @@ end
 
 def show_version
     puts "                                                                   "
-    puts "  SNMPSCAN mafri-edition version 1.6.2                             "
+    puts "  SNMPSCAN version 1.6.2                                           "
     puts "                                                                   "
 end
 
