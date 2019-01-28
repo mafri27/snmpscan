@@ -4,6 +4,12 @@ require 'rubygems'
 require 'snmp'
 require 'yaml'
 
+class Integer
+    def byte_to_Mbit
+        return (self * 8 / 1024 / 1024) 
+    end
+end
+
 # Funktion zur ausgabe der help
 
 def show_help
@@ -244,10 +250,19 @@ begin
 
         time1 = Time.now.to_i
 
-        #erstdurchlauf des Arrays
+        #fill old data_array for first time
 
         manager.walk(iftable_columns) do |row|
-            old[row[0].value.to_i()]=["#{row[0].value}", "#{row[1].value}", "#{row[2].value}", "#{row[3].value}", "#{row[4].value}", "#{row[5].value}", "#{row[6].value}" , "#{row[7].value}"]
+            old[ row[0].value.to_i ]= { 
+                :ifIndex => "#{row[0].value}", 
+                :ifDescr => "#{row[1].value}", 
+                :ifHCInOctets => "#{row[2].value}", 
+                :ifHCOutOctets => "#{row[3].value}", 
+                :ifInUcastPkts => "#{row[4].value}", 
+                :ifOutUcastPkts => "#{row[5].value}", 
+                :ifAlias => "#{row[6].value}", 
+                :ifInErrors => "#{row[7].value}" 
+            } 
         end
 
         #herausfinden der add_oid
@@ -363,7 +378,7 @@ begin
 
             manager.walk(iftable_columns) do |row|
 
-                #testen ob Interfacebezeichnung auf eine der regexp matched
+                #test if Interfacedescription or interfacename match on of regexp
                 match=false
                 reg_interface.each do |x|
                     if row[1].value =~ x || row[6].value =~ x
@@ -371,29 +386,33 @@ begin
                         break
                     end
                 end
-
                 if match
 
-                    #berechnung der werte pro Sekunden
+                    int_id = row[0].value.to_i()
+                    
 
-                    if old[row[0].value.to_i()] != nil #ausgabe der werte nur wenn schon alte daten vorhanden sind
 
-                        diffio = (row[2].value.to_i - old[row[0].value.to_i()][2].to_i) / 1024 / 1024 * 8 / interval
-                        diffoo = (row[3].value.to_i - old[row[0].value.to_i()][3].to_i) / 1024 / 1024 * 8 / interval #+ (rand()*300).to_i
-                        diffip = (row[4].value.to_i - old[row[0].value.to_i()][4].to_i) / interval
-                        diffop = (row[5].value.to_i - old[row[0].value.to_i()][5].to_i) / interval
-                        diff_err_in = (row[7].value.to_i - old[row[0].value.to_i][7].to_i) / interval
+                    if old[int_id] != nil #only print values if interface was also at the old array 
 
-                        #ausgabe der werte und evtl setzen der farbe
 
-                        print "\e[1;30m"  if diffio < 5 && diffoo < 5 && diffip < 100 && diffop < 100 
-                        print "\e[1;31m"  if diffio > 700 || diffoo > 700 || diffip > 100000 || diffop > 100000 || ( diff_err_in != 0)
-                        print "\e[33m"  if m_opt == row[0].value.to_i
+                        # calculate traffic per second
+
+                        diffio =      (row[2].value.to_i - old[int_id][:ifHCInOctets].to_i  ) / interval
+                        diffoo =      (row[3].value.to_i - old[int_id][:ifHCOutOctets].to_i ) / interval 
+                        diffip =      (row[4].value.to_i - old[int_id][:ifInUcastPkts].to_i ) / interval
+                        diffop =      (row[5].value.to_i - old[int_id][:ifOutUcastPkts].to_i) / interval
+                        diff_err_in = (row[7].value.to_i - old[int_id][:ifInErrors].to_i    ) / interval
+
+                        #print values and set colour
+
+                        print "\e[1;30m"  if diffio.byte_to_Mbit < 5   && diffoo.byte_to_Mbit < 5   && diffip < 100    && diffop < 100 
+                        print "\e[1;31m"  if diffio.byte_to_Mbit > 700 || diffoo.byte_to_Mbit > 700 || diffip > 100000 || diffop > 100000 || ( diff_err_in != 0)
+                        print "\e[33m"    if m_opt == row[0].value.to_i
 
                         print " #{row[0].value}".ljust(11)
                         print "#{row[1].value[0,30]}".ljust(30)
-                        print "#{diffio} Mbit/s".rjust(15)
-                        print "#{diffoo} Mbit/s".rjust(15)
+                        print "#{diffio.byte_to_Mbit} Mbit/s".rjust(15)
+                        print "#{diffoo.byte_to_Mbit} Mbit/s".rjust(15)
                         print "#{diffip} pps".rjust(15)
                         print "#{diffop} pps".rjust(15)
                         print "#{diff_err_in} ".rjust(10) 
@@ -402,8 +421,18 @@ begin
 
                         print "\e[0;39m" 
                     end
-                    #speichern der alten werte
-                    old[row[0].value.to_i()]=["#{row[0].value}", "#{row[1].value}", "#{row[2].value}", "#{row[3].value}", "#{row[4].value}", "#{row[5].value}", "#{row[6].value}", "#{row[7].value}"]
+
+                    #save current values to old array
+                    old[ int_id ] = { 
+                        :ifIndex => "#{row[0].value}", 
+                        :ifDescr => "#{row[1].value}", 
+                        :ifHCInOctets => "#{row[2].value}", 
+                        :ifHCOutOctets => "#{row[3].value}", 
+                        :ifInUcastPkts => "#{row[4].value}", 
+                        :ifOutUcastPkts => "#{row[5].value}", 
+                        :ifAlias => "#{row[6].value}", 
+                        :ifInErrors => "#{row[7].value}",
+                    } 
                 end
             end
             100.times {print "\e[2K\e[B"} # rest vom screen loeschen
