@@ -416,7 +416,7 @@ begin
                         print " - ".rjust(10)
                     end 
 
-                    print "   #{row[6].value[0,cols-94]}\e[K"
+                    print "   #{row[6].value[0,cols-115]}\e[K"
                     print "\n"
 
                     print "\e[0;39m" 
