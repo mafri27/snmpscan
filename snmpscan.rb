@@ -10,6 +10,24 @@ class Integer
     end
 end
 
+TIOCGWINSZ = 0x5413
+
+def get_console_cols
+
+    cols = 130
+    begin
+        buf = [0, 0, 0, 0].pack("SSSS")
+        if STDOUT.ioctl(TIOCGWINSZ, buf) >= 0 then
+            rows, cols, row_pixels, row_pixels, col_pixels = buf.unpack("SSSS")[0..1]
+        end
+        return cols
+    rescue
+        return 130
+    end
+
+end
+
+
 # Funktion zur ausgabe der help
 
 def show_help
@@ -141,19 +159,6 @@ end
 
 puts "\e[39m\e[2J" # standartfarbe setzen und console leeren
 print "\e[1;1H\n" # an den Anfang der console springen
-
-#ermitteln der spaltenanzahl der konsole
-
-TIOCGWINSZ = 0x5413
-rows, cols = 25, 130
-begin
-    buf = [0, 0, 0, 0].pack("SSSS")
-    if STDOUT.ioctl(TIOCGWINSZ, buf) >= 0 then
-        rows, cols, row_pixels, row_pixels, col_pixels =
-            buf.unpack("SSSS")[0..1]
-    end
-rescue
-end
 
 devs_config = [ 
     { 
@@ -346,6 +351,8 @@ begin
                 end
             end
 
+            cols = get_console_cols
+
             #ausgabe des Headers
             print "\e[K"
             print "\n ifNr      Port                                Incoming       Outgoing      Packets IN    Packets OUT   Errors    Alias\e[K\n "
@@ -368,6 +375,8 @@ begin
                 end
                 if match
 
+                    cols = get_console_cols
+                    
                     int_id = row[0].value.to_i()
 
                     diffio = nil
