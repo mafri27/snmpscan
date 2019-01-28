@@ -2,6 +2,7 @@
 
 require 'rubygems'
 require 'snmp'
+require 'yaml'
 
 # Funktion zur ausgabe der help
 
@@ -118,10 +119,6 @@ ARGV.each_with_index do |option , x |
     if option == "-u"
         u_opt=false
     end
-
-    #Nutzung einer GUI
-
-
 end
 
 if h_opt == nil
@@ -153,8 +150,183 @@ rows, cols = 25, 130
 buf = [0, 0, 0, 0].pack("SSSS")
 if STDOUT.ioctl(TIOCGWINSZ, buf) >= 0 then
     rows, cols, row_pixels, row_pixels, col_pixels =
-      buf.unpack("SSSS")[0..1]
+        buf.unpack("SSSS")[0..1]
 end
+
+devs_config = [ 
+    { 
+        :name =>     '.*',
+        :prio =>     0,
+        :cpu_oid =>  "1.3.6.1.2.1.1.4"
+    },
+    { 
+        :name =>     '.*((Huawei)|(H3C)).*',
+        :prio =>     1,
+        :cpu_oid =>  "1.3.6.1.4.1.2011.2.23.1.18.4.3.1.4"
+    },
+
+    { 
+        :name =>     '^Juniper Networks.*',
+        :prio =>     1,
+        :cpu_oid =>  "1.3.6.1.4.1.2636.3.1.13.1.8.9",
+        :add_infos => [
+            {
+                :oid          => "1.3.6.1.4.1.2636.3.1.13.1.11.9.1.0.0",
+                :name         => "Memoryusage",
+                :type         => "max",
+                :relation     => 80
+            },
+            {
+                :oid          => "1.3.6.1.4.1.2636.3.1.13.1.7.9.1.0.0",
+                :name         => "Temperatur",
+                :type         => "max",
+                :relation     => 40
+            },
+            {
+                :oid          => "1.3.6.1.4.1.2636.3.4.2.3.2.0",
+                :name         => "Alarm",
+                :type         => "same",
+                :relation     =>   [
+                    {
+                        :test    => "0",
+                        :output  => "NO",
+                        :error   => true
+                    },
+                    {
+                        :test    => "1",
+                        :output  => "YES",
+                        :error   =>  false
+                    }
+                ]
+            }
+        ]
+    },
+
+    { 
+        :name =>  '^Juniper Networks, Inc. ex8208',
+        :prio =>  2,
+        :default_filter => [ "^[^.]*$" ]
+    },
+
+
+    { 
+        :name =>    '^Juniper Networks, Inc. ex..00-48t.*',
+        :prio =>    2,
+        :cpu_oid => "1.3.6.1.4.1.2636.3.1.13.1.8.9.1.0",
+        :default_filter => [ "[gx]e-0/[012]/[0-9]*$" ],
+
+    },
+
+    { 
+        :name =>    '.*Riverstone.*',
+        :prio =>    1,
+        :cpu_oid => "1.3.6.1.4.1.52.2501.1.270.2.1.1.2",
+        :default_filter => [ "Physical port" ],
+        :add_infos =>   [
+            {
+                :oid          => "1.3.6.1.4.1.52.2501.1.1.6.0",
+                :name         => "Temperatur",
+                :type         => "same",
+                :relation     =>   [
+                    {
+                        :test    => "1",
+                        :output  => "normal",
+                        :error   => false
+                    },
+                    {
+                        :test    => "2",
+                        :output  => "high",
+                        :error   => true
+                    },
+                    {
+                        :test    => "3",
+                        :output  => "unknown",
+                        :error   => true
+                    }
+                ]
+            }
+        ]
+    },
+    { 
+        :name =>   '.*3000.*Riverstone.*',
+        :prio =>   2,
+        :add_infos =>   [
+            {
+                :oid          => "1.3.6.1.4.1.5567.2.40.1.6.1.1.1.60000001",
+                :name         => "Powersupply 1",
+                :type         => "same",
+                :relation     =>   [
+                    {
+                        :test    => "noSuchObject",
+                        :output  => "ERROR",
+                        :error   => true
+                    },
+                    {
+                        :test    => "",
+                        :output  => "OK",
+                        :error   => false
+                    }
+                ]
+            },
+            {
+                :oid          => "1.3.6.1.4.1.5567.2.40.1.6.1.1.1.60000002",
+                :name         => "Powersupply 2",
+                :type         => "same",
+                :relation     =>   [
+                    {
+                        :test    => "noSuchObject",
+                        :output  => "ERROR",
+                        :error   => true
+                    } ,
+                    {
+                        :test    => "",
+                        :output  => "OK",
+                        :error   => false
+                    }
+                ]
+            }
+        ]
+    },
+    { 
+        :name => '.*8.00.*Riverstone.*',
+        :prio => 2,
+        :add_infos =>   [
+            {
+                :oid          => "1.3.6.1.4.1.52.2501.1.1.5.0",
+                :name         => "Fan",
+                :type         => "same",
+                :relation     =>   [
+                    {
+                        :test    => "1",
+                        :output  => "working",
+                        :error   => false
+                    },
+                    {
+                        :test    => "2",
+                        :output  => "notWorking",
+                        :error   => true
+                    },
+                    {
+                        :test    => "3",
+                        :output  => "unknown",
+                        :error   => true
+                    }
+                ]
+            }
+        ]
+    }
+]
+
+devs_config.sort! do |a , b|
+    if a[:prio] == b[:prio] 
+        a[:name] <=> b[:name] 
+    else 
+        a[:prio] <=> b[:prio] 
+    end
+end
+
+
+
 
 
 # SNMP connect
@@ -166,274 +338,26 @@ begin
 
         #erkennung das systemtyps und setzen von add_infos
 
+        cpu_oid = ""
+        filter = []
+        add_infos = []
+
         systype = manager.get_value("1.3.6.1.2.1.1.1.0")
-        case systype
-        when /^Juniper Networks, Inc. (m|mx|ex9214).*/
 
-            cpu_oid="1.3.6.1.4.1.2636.3.1.13.1.8.9"
-
-            add_info=    [
-                {
-                    'oid'          => "1.3.6.1.4.1.2636.3.1.13.1.11.9.1.0.0",
-                    'name'         => "Memoryusage:",
-                    'type'         => "max",
-                    'relation'     => "80"
-                },
-                {
-                    'oid'          => "1.3.6.1.4.1.2636.3.1.13.1.7.9.1.0.0",
-                    'name'         => "Temperatur:",
-                    'type'         => "max",
-                    'relation'     => "40"
-                },
-                {
-                    'oid'          => "1.3.6.1.4.1.2636.3.4.2.3.2.0",
-                    'name'         => "Alarm:",
-                    'type'         => "same",
-                    'relation'     =>   [
-                        {
-                            'test'    => "0",
-                            'output'  => "NO",
-                            'error'   => "0"
-                        },
-                        {
-                            'test'    => "1",
-                            'output'  => "YES",
-                            'error'   =>  "1"
-                        }
-                    ]
-                }
-            ]
-
-
-        when /^Juniper Networks, Inc. ex..00-48t.*/
-
-            if r_opt.length == 0
-                r_opt.push "[gx]e-0/[012]/[0-9]*$"     #alle interfaces *e-0/*/*.*
+        devs_config.each do |dev|
+            if systype =~ Regexp.new(dev[:name])
+                cpu_oid = dev[:cpu_oid] if dev[:cpu_oid]
+                filter = filter + dev[:default_filter] if dev[:default_filter] 
+                add_infos = add_infos + dev[:add_infos] if dev[:add_infos] 
             end
-
-
-            cpu_oid="1.3.6.1.4.1.2636.3.1.13.1.8.9.1.0"
-
-            add_info=    [
-                {
-                    'oid'          => "1.3.6.1.4.1.2636.3.1.13.1.11.9.1.0.0",
-                    'name'         => "Memoryusage:",
-                    'type'         => "max",
-                    'relation'     => "80"
-                },
-                {
-                    'oid'          => "1.3.6.1.4.1.2636.3.1.13.1.7.9.1.0.0",
-                    'name'         => "Temperatur:",
-                    'type'         => "max",
-                    'relation'     => "40"
-                },
-                {
-                    'oid'          => "1.3.6.1.4.1.2636.3.4.2.3.2.0",
-                    'name'         => "Alarm:",
-                    'type'         => "same",
-                    'relation'     =>   [
-                        {
-                            'test'    => "0",
-                            'output'  => "NO",
-                            'error'   => "0"
-                        },
-                        {
-                            'test'    => "1",
-                            'output'  => "YES",
-                            'error'   =>  "1"
-                        }
-                    ]
-                }
-            ]
-
-        when /^Juniper Networks, Inc. ex8208*/
-
-            if r_opt.length == 0
-                r_opt.push "^[^.]*$"     #alle interfaces *e-0/*/*.*
-            end
-
-
-            cpu_oid="1.3.6.1.4.1.2636.3.1.13.1.8.9"
-
-            add_info=    [
-                {
-                    'oid'          => "1.3.6.1.4.1.2636.3.1.13.1.11.9.1.0.0",
-                    'name'         => "Memoryusage:",
-                    'type'         => "max",
-                    'relation'     => "80"
-                },
-                {
-                    'oid'          => "1.3.6.1.4.1.2636.3.1.13.1.7.9.1.0.0",
-                    'name'         => "Temperatur:",
-                    'type'         => "max",
-                    'relation'     => "40"
-                },
-                {
-                    'oid'          => "1.3.6.1.4.1.2636.3.4.2.3.2.0",
-                    'name'         => "Alarm:",
-                    'type'         => "same",
-                    'relation'     =>   [
-                        {
-                            'test'    => "0",
-                            'output'  => "NO",
-                            'error'   => "0"
-                        },
-                        {
-                            'test'    => "1",
-                            'output'  => "YES",
-                            'error'   =>  "1"
-                        }
-                    ]
-                }
-            ]
-
-        when /.*3000.*Riverstone.*/
-
-            # bei aufruf ohne regexp port nur phys interfaces anzeigen
-
-            if r_opt.length == 0 && m_opt=="no"
-                r_opt.push "Physical port"
-            end
-            if r_opt.length == 0 && m_opt=="yes"
-                r_opt.push "IP interface"
-            end
-
-            cpu_oid="1.3.6.1.4.1.52.2501.1.270.2.1.1.2"
-
-            add_info=   [
-                {
-                    'oid'          => "1.3.6.1.4.1.5567.2.40.1.6.1.1.1.60000001",
-                    'name'         => "Powersupply 1:",
-                    'type'         => "same",
-                    'relation'     =>   [
-                        {
-                            'test'    => "noSuchObject",
-                            'output'  => "ERROR",
-                            'error'   => "1"
-                        },
-                        {
-                            'test'    => "",
-                            'output'  => "OK",
-                            'error'   => "0"
-                        }
-                    ]
-                },
-                {
-                    'oid'          => "1.3.6.1.4.1.5567.2.40.1.6.1.1.1.60000002",
-                    'name'         => "Powersupply 2:",
-                    'type'         => "same",
-                    'relation'     =>   [
-                        {
-                            'test'    => "noSuchObject",
-                            'output'  => "ERROR",
-                            'error'   => "1"
-                        } ,
-                        {
-                            'test'    => "",
-                            'output'  => "OK",
-                            'error'   => "0"
-                        }
-                    ]
-                },
-                {
-                    'oid'          => "1.3.6.1.4.1.52.2501.1.1.6.0",
-                    'name'         => "Temperatur:",
-                    'type'         => "same",
-                    'relation'     =>   [
-                        {
-                            'test'    => "1",
-                            'output'  => "normal",
-                            'error'   => "0"
-                        },
-                        {
-                            'test'    => "2",
-                            'output'  => "high",
-                            'error'   => "1"
-                        },
-                        {
-                            'test'    => "3",
-                            'output'  => "unknown",
-                            'error'   => "1"
-                        }
-                    ]
-                }
-            ]
-
-        when /.*8.00.*Riverstone.*/
-
-            # bei aufruf ohne regexp port nur phys interfaces anzeigen
-
-            if r_opt.length == 0 && m_opt=="no"
-                r_opt.push "Physical port"
-            end
-            if r_opt.length == 0 && m_opt=="yes"
-                r_opt.push "IP interface"
-            end
-
-            cpu_oid="1.3.6.1.4.1.52.2501.1.270.2.1.1.2"
-
-            add_info=   [
-                {
-                    'oid'          => "1.3.6.1.4.1.52.2501.1.1.5.0",
-                    'name'         => "Fan:",
-                    'type'         => "same",
-                    'relation'     =>   [
-                        {
-                            'test'    => "1",
-                            'output'  => "working",
-                            'error'   => "0"
-                        },
-                        {
-                            'test'    => "2",
-                            'output'  => "notWorking",
-                            'error'   => "1"
-                        },
-                        {
-                            'test'    => "3",
-                            'output'  => "unknown",
-                            'error'   => "1"
-                        }
-                    ]
-                },
-                {
-                    'oid'          => "1.3.6.1.4.1.52.2501.1.1.6.0",
-                    'name'         => "Temperatur:",
-                    'type'         => "same",
-                    'relation'     =>   [
-                        {
-                            'test'    => "1",
-                            'output'  => "normal",
-                            'error'   => "0"
-                        },
-                        {
-                            'test'    => "2",
-                            'output'  => "high",
-                            'error'   => "1"
-                        },
-                        {
-                            'test'    => "3",
-                            'output'  => "unknown",
-                            'error'   => "1"
-                        }
-                    ]
-                }
-            ]
-
-        when /.*((Huawei)|(H3C)).*/
-
-            cpu_oid="1.3.6.1.4.1.2011.2.23.1.18.4.3.1.4"
-
-            add_info =  []
-
-        else
-
-            cpu_oid="1.3.6.1.2.1.1.4"
-
-            add_info =  []
-
         end
+        # use default filter if no r_opt given
+        if r_opt.length == 0
+            r_opt =  filter
+        end
+
         if not u_opt
-            add_info =  []
+            add_infos =  []
         end
 
         #markieren der Zeile mit dem interface der abgefragten IP wenn option -m aktiv
@@ -474,8 +398,8 @@ begin
 
         #herausfinden der add_oid
 
-        add_info.each do |row|
-            add_oid << row['oid']
+        add_infos.each do |row|
+            add_oid << row[:oid]
         end
 
         #Endlosschleife
@@ -528,41 +452,47 @@ begin
 
             add_value.each_with_index do |value, index|
 
+                add_info =  add_infos[index]
+
                 #ueberpruefung der abfrage der add_infos
 
-                case add_info[index]['type']
+
+                case add_infos[index][:type]
                 when /same/
                     #durchlauf der einzelnen same-typen um die richtigen typen zu finden
 
-                    add_info[index]['relation'].each_with_index do |row, index2|
-                        add_reg = Regexp.new row['test']
+                    add_info[:relation].each_with_index do |relation|
+                        add_reg = Regexp.new(relation[:test])
                         if  value.to_s =~ add_reg
-                            print "\e[31m" if add_info[index]['relation'][index2]['error'] == "1"
-                            print " #{add_info[index]['name']}".ljust(30)
-                            print " #{add_info[index]['relation'][index2]['output']}".ljust(30)
+
+                            print "\e[31m" if relation[:error] == "1"
+                            print " #{add_info[:name]}".ljust(30)
+                            print " #{relation[:output]}".ljust(30)
                             print "\e[K\n"
-                            print "\e[39m" if add_info[index]['relation'][index2]['error'] == "1"
+                            print "\e[39m" if relation[:error] == "1"
+
                         end
                     end
+
                 when /max/
 
                     #test ob max-wert ueberschritten wurde
 
-                    print "\e[31m" if add_info[index]['relation'].to_i < value.to_i
-                    print " #{add_info[index]['name']}".ljust(30)
+                    print "\e[31m" if add_info[:relation].to_i < value.to_i
+                    print " #{add_info[:name]}".ljust(30)
                     print " #{value}".ljust(30)
                     print "\e[K\n"
-                    print "\e[39m" if add_info[index]['relation'].to_i < value.to_i
+                    print "\e[39m" if add_info[:relation].to_i < value.to_i
 
                 when /min/
 
                     #test ob min-wert unterschritten wurde
 
-                    print "\e[31m" if add_info[index]['relation'].to_i > value.to_i
-                    print " #{add_info[index]['name']}".ljust(30)
+                    print "\e[31m" if add_info[:relation].to_i > value.to_i
+                    print " #{add_info[:name]}".ljust(30)
                     print " #{value}".ljust(30)
                     print "\e[K\n"
-                    print "\e[39m" if add_info[index]['relation'].to_i > value.to_i
+                    print "\e[39m" if add_info[:relation].to_i > value.to_i
 
                 end
             end
@@ -576,7 +506,7 @@ begin
             STDOUT.flush
 
             #abfrage der Interface werte
-            
+
             manager.walk(iftable_columns) do |row|
 
                 #testen ob Interfacebezeichnung auf eine der regexp matched
@@ -605,7 +535,7 @@ begin
                         print "\e[1;30m"  if diffio < 5 && diffoo < 5 && diffip < 100 && diffop < 100 
                         print "\e[1;31m"  if diffio > 700 || diffoo > 700 || diffip > 100000 || diffop > 100000 || ( diff_err_in != 0)
                         print "\e[33m"  if m_opt == row[0].value.to_i
-                        
+
                         print " #{row[0].value}".ljust(11)
                         print "#{row[1].value[0,30]}".ljust(30)
                         print "#{diffio} Mbit/s".rjust(15)
@@ -631,5 +561,5 @@ rescue SNMP::RequestTimeout
     100.times {print "\e[B"} # ans ende vom Terminal springen
     puts "Timeout for 600s"
     exit
-    
+
 end
