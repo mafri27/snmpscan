@@ -40,7 +40,6 @@ end
 
 r_opt = []    #Array fuer reg exp
 h_opt = nil   #Host
-e_opt = nil   # display Interface errors
 c_opt = nil   #Comunity
 m_opt = "no"  # default nichts markieren
 u_opt = true  # default nichts markieren
@@ -106,12 +105,6 @@ ARGV.each_with_index do |option , x |
     if option == "-r"
         r_opt.push  ARGV[x+1]
         ARGV[x+1]=""
-    end
-
-    #show errors
-
-    if option == "-e"
-        e_opt = true
     end
 
     #markieren der L3 interfaces
@@ -248,23 +241,7 @@ begin
         old = []                       # Werte vom letzen Durchlauf
         add_oid = []                   # Array fuer die OIDs der weitern abfragen.
 
-        time1 = Time.now.to_i
-
-        #fill old data_array for first time
-
-        manager.walk(iftable_columns) do |row|
-            old[ row[0].value.to_i ]= { 
-                :ifIndex => "#{row[0].value}", 
-                :ifDescr => "#{row[1].value}", 
-                :ifHCInOctets => "#{row[2].value}", 
-                :ifHCOutOctets => "#{row[3].value}", 
-                :ifInUcastPkts => "#{row[4].value}", 
-                :ifOutUcastPkts => "#{row[5].value}", 
-                :ifAlias => "#{row[6].value}", 
-                :ifInErrors => "#{row[7].value}" 
-            } 
-        end
-
+        time1 = nil
         #herausfinden der add_oid
 
         add_infos.each do |row|
@@ -293,23 +270,26 @@ begin
 
             #enkennen der Zeit seit dem letzten durchlauf und warten wenn geringer als 10
 
-            print "       Reload:"
-            time2 = Time.now.to_i
-            interval= time2 - time1
-            STDOUT.flush
-            if interval < 10
-                "#{10-interval}".to_i.downto(1) do |count|
-                    print "#{count.to_s}  ".rjust(5)
-                    print "\e[K"
-                    STDOUT.flush
-                    sleep(1)
-                    print "\e[D\e[D\e[D\e[D\e[D"
-                end
-                interval= 10
+            if time1 != nil
+                print "       Reload:"
                 time2 = Time.now.to_i
+                interval= time2 - time1
+                STDOUT.flush
+                if interval < 10
+                    "#{10-interval}".to_i.downto(1) do |count|
+                        print "#{count.to_s}  ".rjust(5)
+                        print "\e[K"
+                        STDOUT.flush
+                        sleep(1)
+                        print "\e[D\e[D\e[D\e[D\e[D"
+                    end
+                    interval= 10
+                    time2 = Time.now.to_i
+                end
+
             end
 
-            time1 = time2
+            time1 = Time.now.to_i
 
             print "\n\e[K\n\e[K"
 
@@ -389,13 +369,14 @@ begin
                 if match
 
                     int_id = row[0].value.to_i()
-                    
 
+                    diffio = nil
+                    diffoo =  nil 
+                    diffip = nil
+                    diffop =  nil
+                    diff_err_in = nil
 
-                    if old[int_id] != nil #only print values if interface was also at the old array 
-
-
-                        # calculate traffic per second
+                    if old[int_id] != nil   
 
                         diffio =      (row[2].value.to_i - old[int_id][:ifHCInOctets].to_i  ) / interval
                         diffoo =      (row[3].value.to_i - old[int_id][:ifHCOutOctets].to_i ) / interval 
@@ -403,24 +384,33 @@ begin
                         diffop =      (row[5].value.to_i - old[int_id][:ifOutUcastPkts].to_i) / interval
                         diff_err_in = (row[7].value.to_i - old[int_id][:ifInErrors].to_i    ) / interval
 
-                        #print values and set colour
-
                         print "\e[1;30m"  if diffio.byte_to_Mbit < 5   && diffoo.byte_to_Mbit < 5   && diffip < 100    && diffop < 100 
                         print "\e[1;31m"  if diffio.byte_to_Mbit > 700 || diffoo.byte_to_Mbit > 700 || diffip > 100000 || diffop > 100000 || ( diff_err_in != 0)
                         print "\e[33m"    if m_opt == row[0].value.to_i
 
-                        print " #{row[0].value}".ljust(11)
-                        print "#{row[1].value[0,30]}".ljust(30)
+                    end
+
+                    print " #{row[0].value}".ljust(11)
+                    print "#{row[1].value[0,30]}".ljust(30)
+
+                    if old[int_id] != nil   
                         print "#{diffio.byte_to_Mbit} Mbit/s".rjust(15)
                         print "#{diffoo.byte_to_Mbit} Mbit/s".rjust(15)
                         print "#{diffip} pps".rjust(15)
                         print "#{diffop} pps".rjust(15)
                         print "#{diff_err_in} ".rjust(10) 
-                        print "   #{row[6].value[0,cols-94]}\e[K"
-                        print "\n"
+                    else
+                        print " - ".rjust(15)
+                        print " - ".rjust(15)
+                        print " - ".rjust(15)
+                        print " - ".rjust(15)
+                        print " - ".rjust(10)
+                    end 
 
-                        print "\e[0;39m" 
-                    end
+                    print "   #{row[6].value[0,cols-94]}\e[K"
+                    print "\n"
+
+                    print "\e[0;39m" 
 
                     #save current values to old array
                     old[ int_id ] = { 
