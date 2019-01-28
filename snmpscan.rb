@@ -12,18 +12,18 @@ end
 
 TIOCGWINSZ = 0x5413
 
-def get_console_cols
+def get_console_cols_rows
 
     cols = 130
+    rows = 40
     begin
         buf = [0, 0, 0, 0].pack("SSSS")
         if STDOUT.ioctl(TIOCGWINSZ, buf) >= 0 then
             rows, cols, row_pixels, row_pixels, col_pixels = buf.unpack("SSSS")[0..1]
         end
-        return cols
     rescue
-        return 130
     end
+    return cols,rows
 
 end
 
@@ -190,10 +190,8 @@ end
 # SNMP connect
 
 begin
-
-
     SNMP::Manager.open(:Host => h_opt , :Community => c_opt , :Timeout => 1 , :Retries => 600) do |manager| # aufbau der SNMP connection
-
+        
         #erkennung das systemtyps und setzen von add_infos
 
         cpu_oid = ""
@@ -351,7 +349,7 @@ begin
                 end
             end
 
-            cols = get_console_cols
+            cols , rows = get_console_cols_rows
 
             #ausgabe des Headers
             print "\e[K"
@@ -362,6 +360,8 @@ begin
             STDOUT.flush
 
             #abfrage der Interface werte
+            
+            printed_lines = add_infos.length + 7
 
             manager.walk(iftable_columns) do |row|
 
@@ -375,8 +375,8 @@ begin
                 end
                 if match
 
-                    cols = get_console_cols
-                    
+                    cols,rows = get_console_cols_rows
+
                     int_id = row[0].value.to_i()
 
                     diffio = nil
@@ -398,7 +398,7 @@ begin
                         print "\e[33m"    if m_opt == row[0].value.to_i
 
                     end
-
+                    
                     print " #{row[0].value}".ljust(11)
                     print "#{row[1].value[0,30]}".ljust(30)
 
@@ -431,7 +431,14 @@ begin
                         :ifOutUcastPkts => "#{row[5].value}", 
                         :ifAlias => "#{row[6].value}", 
                         :ifInErrors => "#{row[7].value}",
-                    } 
+                    }
+                    
+                    printed_lines += 1
+                    if printed_lines == rows - 1 
+                        sleep 1
+                        printed_lines = add_infos.length + 7
+                        print "\e[#{printed_lines};1H\n" # an den Anfang der console springen
+                    end
                 end
             end
             100.times {print "\e[2K\e[B"} # rest vom screen loeschen
