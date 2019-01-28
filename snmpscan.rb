@@ -147,10 +147,13 @@ print "\e[1;1H\n" # an den Anfang der console springen
 
 TIOCGWINSZ = 0x5413
 rows, cols = 25, 130
-buf = [0, 0, 0, 0].pack("SSSS")
-if STDOUT.ioctl(TIOCGWINSZ, buf) >= 0 then
-    rows, cols, row_pixels, row_pixels, col_pixels =
-        buf.unpack("SSSS")[0..1]
+begin
+    buf = [0, 0, 0, 0].pack("SSSS")
+    if STDOUT.ioctl(TIOCGWINSZ, buf) >= 0 then
+        rows, cols, row_pixels, row_pixels, col_pixels =
+            buf.unpack("SSSS")[0..1]
+    end
+rescue
 end
 
 devs_config = [ 
@@ -158,164 +161,18 @@ devs_config = [
         :name =>     '.*',
         :prio =>     0,
         :cpu_oid =>  "1.3.6.1.2.1.1.4"
-    },
-    { 
-        :name =>     '.*((Huawei)|(H3C)).*',
-        :prio =>     1,
-        :cpu_oid =>  "1.3.6.1.4.1.2011.2.23.1.18.4.3.1.4"
-    },
-
-    { 
-        :name =>     '^Juniper Networks.*',
-        :prio =>     1,
-        :cpu_oid =>  "1.3.6.1.4.1.2636.3.1.13.1.8.9",
-        :add_infos => [
-            {
-                :oid          => "1.3.6.1.4.1.2636.3.1.13.1.11.9.1.0.0",
-                :name         => "Memoryusage",
-                :type         => "max",
-                :relation     => 80
-            },
-            {
-                :oid          => "1.3.6.1.4.1.2636.3.1.13.1.7.9.1.0.0",
-                :name         => "Temperatur",
-                :type         => "max",
-                :relation     => 40
-            },
-            {
-                :oid          => "1.3.6.1.4.1.2636.3.4.2.3.2.0",
-                :name         => "Alarm",
-                :type         => "same",
-                :relation     =>   [
-                    {
-                        :test    => "0",
-                        :output  => "NO",
-                        :error   => true
-                    },
-                    {
-                        :test    => "1",
-                        :output  => "YES",
-                        :error   =>  false
-                    }
-                ]
-            }
-        ]
-    },
-
-    { 
-        :name =>  '^Juniper Networks, Inc. ex8208',
-        :prio =>  2,
-        :default_filter => [ "^[^.]*$" ]
-    },
-
-
-    { 
-        :name =>    '^Juniper Networks, Inc. ex..00-48t.*',
-        :prio =>    2,
-        :cpu_oid => "1.3.6.1.4.1.2636.3.1.13.1.8.9.1.0",
-        :default_filter => [ "[gx]e-0/[012]/[0-9]*$" ],
-
-    },
-
-    { 
-        :name =>    '.*Riverstone.*',
-        :prio =>    1,
-        :cpu_oid => "1.3.6.1.4.1.52.2501.1.270.2.1.1.2",
-        :default_filter => [ "Physical port" ],
-        :add_infos =>   [
-            {
-                :oid          => "1.3.6.1.4.1.52.2501.1.1.6.0",
-                :name         => "Temperatur",
-                :type         => "same",
-                :relation     =>   [
-                    {
-                        :test    => "1",
-                        :output  => "normal",
-                        :error   => false
-                    },
-                    {
-                        :test    => "2",
-                        :output  => "high",
-                        :error   => true
-                    },
-                    {
-                        :test    => "3",
-                        :output  => "unknown",
-                        :error   => true
-                    }
-                ]
-            }
-        ]
-    },
-    { 
-        :name =>   '.*3000.*Riverstone.*',
-        :prio =>   2,
-        :add_infos =>   [
-            {
-                :oid          => "1.3.6.1.4.1.5567.2.40.1.6.1.1.1.60000001",
-                :name         => "Powersupply 1",
-                :type         => "same",
-                :relation     =>   [
-                    {
-                        :test    => "noSuchObject",
-                        :output  => "ERROR",
-                        :error   => true
-                    },
-                    {
-                        :test    => "",
-                        :output  => "OK",
-                        :error   => false
-                    }
-                ]
-            },
-            {
-                :oid          => "1.3.6.1.4.1.5567.2.40.1.6.1.1.1.60000002",
-                :name         => "Powersupply 2",
-                :type         => "same",
-                :relation     =>   [
-                    {
-                        :test    => "noSuchObject",
-                        :output  => "ERROR",
-                        :error   => true
-                    } ,
-                    {
-                        :test    => "",
-                        :output  => "OK",
-                        :error   => false
-                    }
-                ]
-            }
-        ]
-    },
-    { 
-        :name => '.*8.00.*Riverstone.*',
-        :prio => 2,
-        :add_infos =>   [
-            {
-                :oid          => "1.3.6.1.4.1.52.2501.1.1.5.0",
-                :name         => "Fan",
-                :type         => "same",
-                :relation     =>   [
-                    {
-                        :test    => "1",
-                        :output  => "working",
-                        :error   => false
-                    },
-                    {
-                        :test    => "2",
-                        :output  => "notWorking",
-                        :error   => true
-                    },
-                    {
-                        :test    => "3",
-                        :output  => "unknown",
-                        :error   => true
-                    }
-                ]
-            }
-        ]
     }
 ]
+
+[ ".snmpscan/" , "/etc/snmpscan/" "~/.snmpscan/" ].each do |folder|
+    Dir["#{folder}*.device"].each do |file|
+        config = YAML.load_file(file)
+        if config == false
+            raise "error loading file #{file}"
+        end
+        devs_config = devs_config + config
+    end
+end
 
 devs_config.sort! do |a , b|
     if a[:prio] == b[:prio] 
@@ -324,9 +181,6 @@ devs_config.sort! do |a , b|
         a[:prio] <=> b[:prio] 
     end
 end
-
-
-
 
 
 # SNMP connect

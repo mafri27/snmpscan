@@ -1,0 +1,59 @@
+---
+- :name: ".*Riverstone.*"
+  :prio: 1
+  :cpu_oid: 1.3.6.1.4.1.52.2501.1.270.2.1.1.2
+  :default_filter:
+  - Physical port
+  :add_infos:
+  - :oid: 1.3.6.1.4.1.52.2501.1.1.6.0
+    :name: Temperatur
+    :type: same
+    :relation:
+    - :test: '1'
+      :output: normal
+      :error: false
+    - :test: '2'
+      :output: high
+      :error: true
+    - :test: '3'
+      :output: unknown
+      :error: true
+- :name: ".*3000.*Riverstone.*"
+  :prio: 2
+  :add_infos:
+  - :oid: 1.3.6.1.4.1.5567.2.40.1.6.1.1.1.60000001
+    :name: Powersupply 1
+    :type: same
+    :relation:
+    - :test: noSuchObject
+      :output: ERROR
+      :error: true
+    - :test: ''
+      :output: OK
+      :error: false
+  - :oid: 1.3.6.1.4.1.5567.2.40.1.6.1.1.1.60000002
+    :name: Powersupply 2
+    :type: same
+    :relation:
+    - :test: noSuchObject
+      :output: ERROR
+      :error: true
+    - :test: ''
+      :output: OK
+      :error: false
+- :name: ".*8.00.*Riverstone.*"
+  :prio: 2
+  :add_infos:
+  - :oid: 1.3.6.1.4.1.52.2501.1.1.5.0
+    :name: Fan
+    :type: same
+    :relation:
+    - :test: '1'
+      :output: working
+      :error: false
+    - :test: '2'
+      :output: notWorking
+      :error: true
+    - :test: '3'
+      :output: unknown
+      :error: true
