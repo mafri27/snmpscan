@@ -34,7 +34,7 @@ def show_help
     puts "                                                                   "
     puts "  #{$0} -c <community> -h <Host> [options]                         "
     puts "                                                                   "
-    puts "  SNMPSCAN version 1.6.2                                           "
+    puts "  SNMPSCAN version 1.6.3                                           "
     puts "                                                                   "
     puts "  -h            IP-address or the Hostname of the Targetsystem     "
     puts "  -c            SNMP community                                     "
@@ -52,7 +52,7 @@ end
 
 def show_version
     puts "                                                                   "
-    puts "  SNMPSCAN version 1.6.2                                           "
+    puts "  SNMPSCAN version 1.6.3                                           "
     puts "                                                                   "
 end
 
@@ -168,7 +168,7 @@ devs_config = [
     }
 ]
 
-[ ".snmpscan/" , "/etc/snmpscan/" "~/.snmpscan/" ].each do |folder|
+[ ".snmpscan/" , "/etc/snmpscan/" , "~/.snmpscan/" ].each do |folder|
     Dir["#{folder}*.device"].each do |file|
         config = YAML.load_file(file)
         if config == false
