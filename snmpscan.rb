@@ -170,7 +170,7 @@ devs_config = [
     }
 ]
 
-# lod device config from .device files
+# load device config from .device files
 
 [ ".snmpscan/" , "/etc/snmpscan/" , "~/.snmpscan/" ].each do |folder|
     Dir["#{folder}*.device"].each do |file|
