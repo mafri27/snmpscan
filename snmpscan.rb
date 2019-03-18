@@ -11,6 +11,7 @@ class Integer
 end
 
 TIOCGWINSZ = 0x5413
+page_time = 1 
 
 def get_console_cols_rows
 
@@ -28,7 +29,7 @@ def get_console_cols_rows
 end
 
 
-# Funktion zur ausgabe der help
+# Function for help
 
 def show_help
     puts "                                                                   "
@@ -48,7 +49,7 @@ def show_help
     exit
 end
 
-# Funktion zur ausgabe der version
+# Function for version
 
 def show_version
     puts "                                                                   "
@@ -56,11 +57,11 @@ def show_version
     puts "                                                                   "
 end
 
-r_opt = []    #Array fuer reg exp
-h_opt = nil   #Host
-c_opt = nil   #Comunity
-m_opt = "no"  # default nichts markieren
-u_opt = true  # default nichts markieren
+r_opt = []    # Array for interface filter reg exp
+h_opt = nil   # Host
+c_opt = nil   # Comunity
+m_opt = "no"  # default for line mark
+u_opt = true  # default show addition information
 
 reg_ip = Regexp.new '\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
 reg_ipv6 = /^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))(%.+)?\s*$/ 
@@ -69,26 +70,26 @@ reg_domain = Regexp.new '^[A-Za-z0-9.-]+\.[A-Za-z]{2,5}$'
 
 ARGV.each_with_index do |option , x |
 
-    # testen der argumente ob version ausgegeben werden soll
+    # check if version sould be printed
 
     if option == "--version" || option == "-v"
         show_version()
         exit
     end
 
-    # testen der argumente ob help ausgegeben werden soll oder zu wenig argumente
+    # check if help sould be printed
 
     if option == "--help"
         show_help()
         exit
     end
 
-    #Einlesen der ip option
+    #set host  identifier
 
     if option == "-h"
         if h_opt == nil
 
-            # test ob angegebener Host eine regulaere IP bzw Domian sind. ansonsten ausgabe von help
+            # test if given host an IP or Domian
 
             if !(ARGV[x+1] =~ reg_ip) && !(ARGV[x+1] =~ reg_domain ) && !(ARGV[x+1] =~ reg_ipv6)
                 print "\n Wrong IP format\n"
@@ -102,42 +103,43 @@ ARGV.each_with_index do |option , x |
                 end
             end
         else
-            print "\n Multiple Hosts definated\n"
+            print "\n Multiple Hosts defined\n"
             show_help()
         end
     end
 
-    #Einlesen der Comunity
+    #get Comunity
 
     if option == "-c"
         if c_opt == nil
             c_opt = ARGV[x+1]
         else
-            print "\n Multiple Comunitys definated\n"
+            print "\n Multiple Comunitys defined\n"
             show_help()
         end
     end
 
-    #array mit req exp fuellen
+    #read inferface filter 
 
     if option == "-r"
         r_opt.push  ARGV[x+1]
         ARGV[x+1]=""
     end
 
-    #markieren der L3 interfaces
+    #mark of L3 interfaces
 
     if option == "-m"
         m_opt="yes"
     end
 
-    #anzeigen der zusatzinfos
+    #view additional information
 
     if option == "-u"
         u_opt=false
     end
 end
 
+# show help if host r community missing 
 if h_opt == nil
     show_help()
 end
@@ -145,20 +147,20 @@ if c_opt == nil
     show_help()
 end
 
-# definition welche angaben man zum interface will
+# definition of requesting fieldsl
 
 iftable_columns = ["ifIndex", "ifDescr", "ifHCInOctets", "ifHCOutOctets", "ifInUcastPkts", "ifOutUcastPkts", "ifAlias", "ifInErrors"]
 
-# sauberes beenden beim druecken vom strg+c
+# clear scrren at control-c (don't show ruby errors)
 
 trap('INT') do
-    print "\e[1G" # an den Anfang der zeile springen um in die erste Spalte zu kommen
-    100.times {print "\e[B"} # ans ende vom Terminal springen
+    print "\e[1G" # jump to the start of the line
+    100.times {print "\e[B"} # print 100 linebreaks (with disabled scrolling)
     exit
 end
 
-puts "\e[39m\e[2J" # standartfarbe setzen und console leeren
-print "\e[1;1H\n" # an den Anfang der console springen
+puts "\e[39m\e[2J" #  set default colour and clear screen
+print "\e[1;1H\n" # jump to position 1:1
 
 devs_config = [ 
     { 
@@ -167,6 +169,8 @@ devs_config = [
         :cpu_oid =>  "1.3.6.1.2.1.1.4"
     }
 ]
+
+# lod device config from .device files
 
 [ ".snmpscan/" , "/etc/snmpscan/" , "~/.snmpscan/" ].each do |folder|
     Dir["#{folder}*.device"].each do |file|
@@ -190,9 +194,9 @@ end
 # SNMP connect
 
 begin
-    SNMP::Manager.open(:Host => h_opt , :Community => c_opt , :Timeout => 1 , :Retries => 600) do |manager| # aufbau der SNMP connection
+    SNMP::Manager.open(:Host => h_opt , :Community => c_opt , :Timeout => 1 , :Retries => 600) do |manager| 
         
-        #erkennung das systemtyps und setzen von add_infos
+        #get device-name to define additional information
 
         cpu_oid = ""
         filter = []
@@ -207,63 +211,50 @@ begin
                 add_infos = add_infos + dev[:add_infos] if dev[:add_infos] 
             end
         end
-        # use default filter if no r_opt given
+        # use filter of device-devs if no r_opt given
         if r_opt.length == 0
             r_opt =  filter
         end
 
-        if not u_opt
+        if u_opt ==  false 
             add_infos =  []
         end
 
-        #markieren der Zeile mit dem interface der abgefragten IP wenn option -m aktiv
+        #search for interface with hostIP if m_opt given. write interfaceID to m_opt 
 
         if m_opt == "yes"
-
-            #IPs des Routers mit interfaceID abfragen
-
             manager.walk(["1.3.6.1.2.1.4.20.1.2 ","1.3.6.1.2.1.4.20.1.1"]) do |row|
-                #testen ob interfaceIP = HostIP
                 if row[1].value.to_s == h_opt
-                    #ermittelte interfaceID speichern
                     m_opt = row[0].value.to_i
                 end
             end
         end
 
-        #m-opt enthaelt jetzt die zu markierende InterfaceID
 
-        #alle interfaces anzeigen wenn nichts angegeben
-
-        if r_opt.length == 0
-            r_opt = [""]
-        end
-
-        #setzen der Variable
         reg_interface = r_opt.map { |r| Regexp.new(r)  }
-        old = []                       # Werte vom letzen Durchlauf
-        add_oid = []                   # Array fuer die OIDs der weitern abfragen.
+        old = []           
+        add_oid = []      
 
         time1 = nil
-        #herausfinden der add_oid
 
-        add_infos.each do |row|
-            add_oid << row[:oid]
+        #get oid for add_infos
+
+        add_infos.each do |add_info|
+            add_oid << add_info[:oid]
         end
 
-        #Endlosschleife
 
         while 1
 
-            print "\e[1;1H\e[K\n" #an consolenanfang springen
+            print "\e[1;1H\e[K\n" #jump to 1:1 and clear first line
 
-            #Ausgabe Systeminformationen incl mehrerer CPUs
+            #print default-data and CPU
 
-            print " System: #{h_opt}       "                                       #ausgabe der SystemIP
-            print " Sysname: #{manager.get_value('1.3.6.1.2.1.1.5.0')}       "         #ausgabe des sysnames
+            print " System: #{h_opt}       "                                          #print SystemName/IP
+            print " Sysname: #{manager.get_value('1.3.6.1.2.1.1.5.0')}       "        #printsysnames
             print " CPU: "
 
-            #Ausgabe der CPUlasten
+            #print CPU
 
             manager.walk(cpu_oid) do |row|
                 row.each do |vb|
@@ -271,7 +262,7 @@ begin
                 end
             end
 
-            #enkennen der Zeit seit dem letzten durchlauf und warten wenn geringer als 10
+            # check if last lopp is less then 10 seconds in the past. 
 
             if time1 != nil
                 print "       Reload:"
@@ -296,9 +287,7 @@ begin
 
             print "\n\e[K\n\e[K"
 
-            #Abfrage der add_info
-
-            #Abfrage aller zusaetzlichen Infos, und durchlauf der einzelnen werte
+            #get add_info
 
             add_value=manager.get_value(add_oid)
 
@@ -306,12 +295,10 @@ begin
 
                 add_info =  add_infos[index]
 
-                #ueberpruefung der abfrage der add_infos
-
+                #check the result of the add_infos
 
                 case add_infos[index][:type]
                 when /same/
-                    #durchlauf der einzelnen same-typen um die richtigen typen zu finden
 
                     add_info[:relation].each_with_index do |relation|
                         add_reg = Regexp.new(relation[:test])
@@ -328,8 +315,6 @@ begin
 
                 when /max/
 
-                    #test ob max-wert ueberschritten wurde
-
                     print "\e[31m" if add_info[:relation].to_i < value.to_i
                     print " #{add_info[:name]}".ljust(30)
                     print " #{value}".ljust(30)
@@ -337,8 +322,6 @@ begin
                     print "\e[39m" if add_info[:relation].to_i < value.to_i
 
                 when /min/
-
-                    #test ob min-wert unterschritten wurde
 
                     print "\e[31m" if add_info[:relation].to_i > value.to_i
                     print " #{add_info[:name]}".ljust(30)
@@ -351,7 +334,7 @@ begin
 
             cols , rows = get_console_cols_rows
 
-            #ausgabe des Headers
+            #printheader
             print "\e[K"
             print "\n ifNr      Port                                Incoming       Outgoing      Packets IN    Packets OUT   Errors    Alias\e[K\n "
             "#{cols-2}".to_i.times{print "-"}
@@ -359,8 +342,8 @@ begin
 
             STDOUT.flush
 
-            #abfrage der Interface werte
-            
+            #get interface counter
+            paged = false
             printed_lines = add_infos.length + 7
 
             manager.walk(iftable_columns) do |row|
@@ -435,13 +418,18 @@ begin
                     
                     printed_lines += 1
                     if printed_lines == rows - 1 
-                        sleep 1
+                        sleep page_time
+                        paged = true
                         printed_lines = add_infos.length + 7
-                        print "\e[#{printed_lines};1H\n" # an den Anfang der console springen
+                        print "\e[#{printed_lines};1H\n" # jump to the start of the list
                     end
                 end
             end
-            100.times {print "\e[2K\e[B"} # rest vom screen loeschen
+            if paged == false
+                100.times {print "\e[2K\e[B"} # clear rest of screen if not paged
+            else
+                sleep page_time
+            end
         end
     end
 rescue SNMP::RequestTimeout
