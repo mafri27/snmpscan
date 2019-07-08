@@ -166,8 +166,7 @@ devs_config = [
     { 
         :name =>     '.*',
         :prio =>     0,
-        :cpu_oid =>  "1.3.6.1.2.1.1.4",
-        :default_filter => [ "" ]
+        :cpu_oid =>  "1.3.6.1.2.1.1.4"
     }
 ]
 
@@ -215,6 +214,9 @@ begin
         # use filter of device-devs if no r_opt given
         if r_opt.length == 0
             r_opt =  filter
+        end
+        if r_opt.length == 0
+            r_opt = [ "" ]
         end
 
         if u_opt ==  false 
