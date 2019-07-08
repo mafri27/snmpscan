@@ -166,7 +166,8 @@ devs_config = [
     { 
         :name =>     '.*',
         :prio =>     0,
-        :cpu_oid =>  "1.3.6.1.2.1.1.4"
+        :cpu_oid =>  "1.3.6.1.2.1.1.4",
+        :default_filter => [ "" ]
     }
 ]
 
