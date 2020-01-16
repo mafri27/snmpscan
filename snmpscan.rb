@@ -41,6 +41,7 @@ def show_help
     puts "  -c            SNMP community                                     "
     puts "  -r            specify the name of displayed Interfaces           "
     puts "  -m            Mark line of selected Interface IP                 "
+    puts "  -i            minimum update interval                            "
     puts "  -u            disable additional System-Infos                    "
     puts "                                                                   "
     puts "  --help        display this help and exit                         "
@@ -55,11 +56,13 @@ def show_version
     puts "                                                                   "
     puts "  SNMPSCAN version 1.6.3                                           "
     puts "                                                                   "
+    exit
 end
 
 r_opt = []    # Array for interface filter reg exp
 h_opt = nil   # Host
 c_opt = nil   # Comunity
+i_opt = nil   # interval
 m_opt = "no"  # default for line mark
 u_opt = true  # default show addition information
 
@@ -68,20 +71,25 @@ reg_ipv6 = /^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}
 
 reg_domain = Regexp.new '^[A-Za-z0-9.-]+\.[A-Za-z]{2,5}$'
 
+skip = false
+
 ARGV.each_with_index do |option , x |
+
+    if skip == true
+        skip = false
+        next
+    end
 
     # check if version sould be printed
 
     if option == "--version" || option == "-v"
         show_version()
-        exit
     end
 
     # check if help sould be printed
 
     if option == "--help"
         show_help()
-        exit
     end
 
     #set host  identifier
@@ -100,10 +108,23 @@ ARGV.each_with_index do |option , x |
                     show_help()
                 else
                     h_opt = ARGV[x+1]
+                    skip == true
                 end
             end
         else
             print "\n Multiple Hosts defined\n"
+            show_help()
+        end
+    end
+
+    #get Interval
+
+    if option == "-i"
+        if i_opt == nil
+            i_opt = ARGV[x+1].to_i
+            skip == true
+        else
+            print "\n Multiple Interval defined\n"
             show_help()
         end
     end
@@ -113,6 +134,7 @@ ARGV.each_with_index do |option , x |
     if option == "-c"
         if c_opt == nil
             c_opt = ARGV[x+1]
+            skip == true
         else
             print "\n Multiple Comunitys defined\n"
             show_help()
@@ -123,7 +145,7 @@ ARGV.each_with_index do |option , x |
 
     if option == "-r"
         r_opt.push  ARGV[x+1]
-        ARGV[x+1]=""
+        skip == true
     end
 
     #mark of L3 interfaces
@@ -146,10 +168,12 @@ end
 if c_opt == nil
     show_help()
 end
-
+if i_opt == nil
+    i_opt = 10
+end
 # definition of requesting fieldsl
 
-iftable_columns = ["ifIndex", "ifDescr", "ifHCInOctets", "ifHCOutOctets", "ifInUcastPkts", "ifOutUcastPkts", "ifAlias", "ifInErrors"]
+iftable_columns = ["ifIndex", "ifDescr", "ifHCInOctets", "ifHCOutOctets", "ifInUcastPkts", "ifOutUcastPkts", "ifAlias", "ifInErrors" ]
 
 # clear scrren at control-c (don't show ruby errors)
 
@@ -202,6 +226,11 @@ begin
         filter = []
         add_infos = []
 
+        in_sec_oct_oid = "2.2.2.2"
+        in_sec_pps_oid = "2.2.2.2"
+        out_sec_oct_oid = "2.2.2.2"
+        out_sec_pps_oid = "2.2.2.2"
+
         systype = manager.get_value("1.3.6.1.2.1.1.1.0")
 
         devs_config.each do |dev|
@@ -209,6 +238,11 @@ begin
                 cpu_oid = dev[:cpu_oid] if dev[:cpu_oid]
                 filter = filter + dev[:default_filter] if dev[:default_filter] 
                 add_infos = add_infos + dev[:add_infos] if dev[:add_infos] 
+               
+                in_sec_oct_oid = dev[:in_sec_oct_oid] if dev[:in_sec_oct_oid]
+                in_sec_pps_oid = dev[:in_sec_pps_oid] if dev[:in_sec_pps_oid]
+                out_sec_oct_oid = dev[:out_sec_oct_oid] if dev[:out_sec_oct_oid]
+                out_sec_pps_oid = dev[:out_sec_pps_oid] if dev[:out_sec_pps_oid]
             end
         end
         # use filter of device-devs if no r_opt given
@@ -223,6 +257,11 @@ begin
             add_infos =  []
         end
 
+        iftable_columns << in_sec_oct_oid
+        iftable_columns << out_sec_oct_oid
+        iftable_columns << in_sec_pps_oid
+        iftable_columns << out_sec_pps_oid
+  
         #search for interface with hostIP if m_opt given. write interfaceID to m_opt 
 
         if m_opt == "yes"
@@ -272,15 +311,15 @@ begin
                 time2 = Time.now.to_i
                 interval= time2 - time1
                 STDOUT.flush
-                if interval < 10
-                    "#{10-interval}".to_i.downto(1) do |count|
+                if interval < i_opt
+                    "#{i_opt-interval}".to_i.downto(1) do |count|
                         print "#{count.to_s}  ".rjust(5)
                         print "\e[K"
                         STDOUT.flush
                         sleep(1)
                         print "\e[D\e[D\e[D\e[D\e[D"
                     end
-                    interval= 10
+                    interval= i_opt
                     time2 = Time.now.to_i
                 end
 
@@ -363,7 +402,8 @@ begin
 
                     cols,rows = get_console_cols_rows
 
-                    int_id = row[0].value.to_i()
+                    int_id = row[0].value.to_i
+                    old_row = old[int_id]
 
                     diffio = nil
                     diffoo =  nil 
@@ -371,36 +411,71 @@ begin
                     diffop =  nil
                     diff_err_in = nil
 
-                    if old[int_id] != nil   
+                    if old_row != nil   
 
-                        diffio =      (row[2].value.to_i - old[int_id][:ifHCInOctets].to_i  ) / interval
-                        diffoo =      (row[3].value.to_i - old[int_id][:ifHCOutOctets].to_i ) / interval 
-                        diffip =      (row[4].value.to_i - old[int_id][:ifInUcastPkts].to_i ) / interval
-                        diffop =      (row[5].value.to_i - old[int_id][:ifOutUcastPkts].to_i) / interval
-                        diff_err_in = (row[7].value.to_i - old[int_id][:ifInErrors].to_i    ) / interval
+                        diffio =      (row[2].value.to_i - old_row[:ifHCInOctets].to_i  ) / interval
+                        diffoo =      (row[3].value.to_i - old_row[:ifHCOutOctets].to_i ) / interval 
+                        
+                        diffip =      (row[4].value.to_i - old_row[:ifInUcastPkts].to_i ) / interval
+                        diffip =      (row[4].value.to_i + 2**32 - old_row[:ifInUcastPkts].to_i ) / interval if diffip < 0
+                        diffop =      (row[5].value.to_i - old_row[:ifOutUcastPkts].to_i) / interval
+                        diffop =      (row[5].value.to_i + 2**32 - old_row[:ifOutUcastPkts].to_i) / interval if diffop < 0
 
-                        print "\e[1;30m"  if diffio.byte_to_Mbit < 5   && diffoo.byte_to_Mbit < 5   && diffip < 100    && diffop < 100 
-                        print "\e[1;31m"  if diffio.byte_to_Mbit > 700 || diffoo.byte_to_Mbit > 700 || diffip > 100000 || diffop > 100000 || ( diff_err_in != 0)
-                        print "\e[33m"    if m_opt == row[0].value.to_i
+                        diff_err_in = (row[7].value.to_i - old_row[:ifInErrors].to_i    ) / interval
 
                     end
+
+                    diffio = row[8].value.to_i  if row[8].value.to_s  != "noSuchInstance"
+                    diffoo = row[9].value.to_i  if row[9].value.to_s  != "noSuchInstance"
+                    diffip = row[10].value.to_i if row[10].value.to_s != "noSuchInstance"
+                    diffop = row[11].value.to_i if row[11].value.to_s != "noSuchInstance"
+                   
+                    gray = true
+                    gray = false if diffio && diffio.byte_to_Mbit > 5
+                    gray = false if diffoo && diffoo.byte_to_Mbit > 5
+                    gray = false if diffip && diffip > 100
+                    gray = false if diffop && diffop > 100
+                    
+                    red = false
+                    red = true if diffio && diffio.byte_to_Mbit > 700
+                    red = true if diffoo && diffoo.byte_to_Mbit > 700
+                    red = true if diffip && diffip > 100000
+                    red = true if diffop && diffop > 100000
+                    red = true if diff_err_in && diff_err_in != 0
+
+                    
+                    print "\e[1;30m"  if gray 
+                    print "\e[1;31m"  if red
+                    print "\e[33m"    if m_opt == row[0].value.to_i
                     
                     print " #{row[0].value}".ljust(11)
                     print "#{row[1].value[0,30]}".ljust(30)
 
-                    if old[int_id] != nil   
+                    if diffio
                         print "#{diffio.byte_to_Mbit} Mbit/s".rjust(15)
-                        print "#{diffoo.byte_to_Mbit} Mbit/s".rjust(15)
-                        print "#{diffip} pps".rjust(15)
-                        print "#{diffop} pps".rjust(15)
-                        print "#{diff_err_in} ".rjust(10) 
                     else
                         print " - ".rjust(15)
+                    end
+                    if diffoo
+                        print "#{diffoo.byte_to_Mbit} Mbit/s".rjust(15)
+                    else
                         print " - ".rjust(15)
+                    end
+                    if diffip
+                        print "#{diffip} pps".rjust(15)
+                    else
                         print " - ".rjust(15)
+                    end
+                    if diffop
+                        print "#{diffop} pps".rjust(15)
+                    else
                         print " - ".rjust(15)
+                    end
+                    if diff_err_in
+                        print "#{diff_err_in} ".rjust(10) 
+                    else
                         print " - ".rjust(10)
-                    end 
+                    end
 
                     print "   #{row[6].value[0,cols-115]}\e[K"
                     print "\n"
