@@ -35,7 +35,7 @@ def show_help
     puts "                                                                   "
     puts "  #{$0} -c <community> -h <Host> [options]                         "
     puts "                                                                   "
-    puts "  SNMPSCAN version 1.6.3                                           "
+    puts "  SNMPSCAN version 1.7.1                                           "
     puts "                                                                   "
     puts "  -h            IP-address or the Hostname of the Targetsystem     "
     puts "  -c            SNMP community                                     "
@@ -54,7 +54,7 @@ end
 
 def show_version
     puts "                                                                   "
-    puts "  SNMPSCAN version 1.6.3                                           "
+    puts "  SNMPSCAN version 1.7.1                                           "
     puts "                                                                   "
     exit
 end
@@ -226,6 +226,7 @@ begin
         filter = []
         add_infos = []
 
+        sec_value_factor = 1
         in_sec_oct_oid = "2.2.2.2"
         in_sec_pps_oid = "2.2.2.2"
         out_sec_oct_oid = "2.2.2.2"
@@ -239,6 +240,7 @@ begin
                 filter = filter + dev[:default_filter] if dev[:default_filter] 
                 add_infos = add_infos + dev[:add_infos] if dev[:add_infos] 
                
+                sec_value_factor = dev[:sec_value_factor].to_i if dev[:sec_value_factor]
                 in_sec_oct_oid = dev[:in_sec_oct_oid] if dev[:in_sec_oct_oid]
                 in_sec_pps_oid = dev[:in_sec_pps_oid] if dev[:in_sec_pps_oid]
                 out_sec_oct_oid = dev[:out_sec_oct_oid] if dev[:out_sec_oct_oid]
@@ -425,10 +427,10 @@ begin
 
                     end
 
-                    diffio = row[8].value.to_i  if row[8].value.to_s  != "noSuchInstance"
-                    diffoo = row[9].value.to_i  if row[9].value.to_s  != "noSuchInstance"
-                    diffip = row[10].value.to_i if row[10].value.to_s != "noSuchInstance"
-                    diffop = row[11].value.to_i if row[11].value.to_s != "noSuchInstance"
+                    diffio = row[8].value.to_i  / sec_value_factor if row[8].value.to_s  != "noSuchInstance"
+                    diffoo = row[9].value.to_i  / sec_value_factor if row[9].value.to_s  != "noSuchInstance"
+                    diffip = row[10].value.to_i / sec_value_factor if row[10].value.to_s != "noSuchInstance"
+                    diffop = row[11].value.to_i / sec_value_factor if row[11].value.to_s != "noSuchInstance"
                    
                     gray = true
                     gray = false if diffio && diffio.byte_to_Mbit > 5
