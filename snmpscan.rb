@@ -429,8 +429,8 @@ begin
 
                     diffio = row[8].value.to_i  / sec_value_factor if row[8].value.to_s  != "noSuchInstance"
                     diffoo = row[9].value.to_i  / sec_value_factor if row[9].value.to_s  != "noSuchInstance"
-                    diffip = row[10].value.to_i / sec_value_factor if row[10].value.to_s != "noSuchInstance"
-                    diffop = row[11].value.to_i / sec_value_factor if row[11].value.to_s != "noSuchInstance"
+                    diffip = row[10].value.to_i if row[10].value.to_s != "noSuchInstance"
+                    diffop = row[11].value.to_i if row[11].value.to_s != "noSuchInstance"
                    
                     gray = true
                     gray = false if diffio && diffio.byte_to_Mbit > 5
