@@ -348,7 +348,7 @@ begin
                         add_reg = Regexp.new(relation[:test])
                         if  value.to_s =~ add_reg
 
-                            print "\e[31m" if relation[:error] == "1"
+                            print "\e[91m" if relation[:error] == "1"
                             print " #{add_info[:name]}".ljust(30)
                             print " #{relation[:output]}".ljust(30)
                             print "\e[K\n"
@@ -359,7 +359,7 @@ begin
 
                 when /max/
 
-                    print "\e[31m" if add_info[:relation].to_i < value.to_i
+                    print "\e[91m" if add_info[:relation].to_i < value.to_i
                     print " #{add_info[:name]}".ljust(30)
                     print " #{value}".ljust(30)
                     print "\e[K\n"
@@ -367,7 +367,7 @@ begin
 
                 when /min/
 
-                    print "\e[31m" if add_info[:relation].to_i > value.to_i
+                    print "\e[91m" if add_info[:relation].to_i > value.to_i
                     print " #{add_info[:name]}".ljust(30)
                     print " #{value}".ljust(30)
                     print "\e[K\n"
@@ -446,9 +446,9 @@ begin
                     red = true if diff_err_in && diff_err_in != 0
 
                     
-                    print "\e[1;30m"  if gray 
-                    print "\e[1;31m"  if red
-                    print "\e[33m"    if m_opt == row[0].value.to_i
+                    print "\e[1;90m"  if gray 
+                    print "\e[1;91m"  if red
+                    print "\e[1;93m"  if m_opt == row[0].value.to_i
                     
                     print " #{row[0].value}".ljust(11)
                     print "#{row[1].value[0,30]}".ljust(30)
