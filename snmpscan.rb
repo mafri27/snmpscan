@@ -500,7 +500,7 @@ begin
                     if printed_lines == rows - 1 
                         sleep page_time
                         paged = true
-                        printed_lines = add_infos.length + 7
+                        printed_lines = add_infos.length + 6
                         print "\e[#{printed_lines};1H\n" # jump to the start of the list
                     end
                 end
