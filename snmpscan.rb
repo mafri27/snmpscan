@@ -499,6 +499,7 @@ begin
                         :ifOutUcastPkts => "#{row[5].value}",
                         :ifAlias => "#{row[6].value}",
                         :ifInErrors => "#{row[7].value}",
+                        :last_update => Time.now.to_i
                     }
 
                     printed_lines += 1
@@ -510,6 +511,9 @@ begin
                     end
                 end
             end
+
+            old.delete_if {|key, value| value[:last_update] < Time.now.to_i - 1000 } 
+
             if paged == false
                 100.times {print "\e[2K\e[B"} # clear rest of screen if not paged
             else
