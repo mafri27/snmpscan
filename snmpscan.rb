@@ -173,7 +173,7 @@ if i_opt == nil
 end
 # definition of requesting fieldsl
 
-iftable_columns = ["ifIndex", "ifDescr", "ifHCInOctets", "ifHCOutOctets", "ifInUcastPkts", "ifOutUcastPkts", "ifAlias", "ifInErrors" ]
+iftable_columns = ["ifIndex", "ifName", "ifHCInOctets", "ifHCOutOctets", "ifInUcastPkts", "ifOutUcastPkts", "ifAlias", "ifInErrors" ]
 
 # clear scrren at control-c (don't show ruby errors)
 
