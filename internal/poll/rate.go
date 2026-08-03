@@ -11,9 +11,8 @@ const (
 //
 // A counter that went backwards is either a wrap or an agent that reset it.
 // Only a 32 bit wrap can be recovered; for a 64 bit counter a decrease means a
-// reset, and inventing a delta there would print an absurd spike. Returning
-// nil makes the table show "-" for one interval instead — the Ruby version
-// printed the negative number.
+// reset, and inventing a delta there would print an absurd spike. Returning nil
+// shows "-" for one interval instead.
 func rate(cur, prev value, width uint, secs float64) *int64 {
 	if !cur.ok || !prev.ok || secs <= 0 {
 		return nil

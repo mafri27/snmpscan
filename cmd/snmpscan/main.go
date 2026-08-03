@@ -47,6 +47,25 @@ type options struct {
 	version      bool
 }
 
+// register declares the command line. Split out so a test can build the same
+// FlagSet the program does.
+func register(fs *flag.FlagSet, opts *options) {
+	fs.StringVar(&opts.host, "h", "", "IP address or hostname of the target system")
+	fs.UintVar(&opts.port, "p", 161, "SNMP port of the target system")
+	fs.StringVar(&opts.community, "c", "", "SNMP community")
+	fs.Var(&opts.filters, "r", "only show interfaces matching this pattern (repeatable)")
+	fs.IntVar(&opts.interval, "i", 0, "seconds between polls, at least 1")
+	fs.DurationVar(&opts.discovery, "discover", 0, "how often to re-read the interface list; negative runs it once at startup")
+	fs.BoolVar(&opts.readings, "a", false, "also show the additional system readings")
+	fs.DurationVar(&opts.timeout, "timeout", 2*time.Second, "SNMP request timeout")
+	fs.IntVar(&opts.retries, "retries", 2, "SNMP retries per request")
+	fs.IntVar(&opts.sessions, "sessions", poll.DefaultSessions, "parallel SNMP sessions")
+	fs.UintVar(&opts.maxRep, "maxrep", 0, "GETBULK max-repetitions; raise it for a faster poll on healthy agents")
+	fs.BoolVar(&opts.ignoreBroken, "ignore-broken-configs", false, "start anyway when a config file does not parse, listing it as a warning")
+	fs.BoolVar(&opts.version, "version", false, "print version and exit")
+	fs.BoolVar(&opts.version, "v", false, "print version and exit")
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "snmpscan:", err)
@@ -59,20 +78,7 @@ func run() error {
 
 	fs := flag.NewFlagSet("snmpscan", flag.ExitOnError)
 	fs.Usage = usage(fs)
-	fs.StringVar(&opts.host, "h", "", "IP address or hostname of the target system")
-	fs.UintVar(&opts.port, "p", 161, "SNMP port of the target system")
-	fs.StringVar(&opts.community, "c", "", "SNMP community")
-	fs.Var(&opts.filters, "r", "only show interfaces matching this pattern (repeatable)")
-	fs.IntVar(&opts.interval, "i", 0, "seconds between polls, at least 1")
-	fs.DurationVar(&opts.discovery, "discover", 0, "how often to re-read the interface list; negative runs it once at startup")
-	fs.BoolVar(&opts.readings, "a", false, "also show the additional system readings")
-	fs.DurationVar(&opts.timeout, "timeout", 2*time.Second, "SNMP request timeout")
-	fs.IntVar(&opts.retries, "retries", 2, "SNMP retries per request")
-	fs.IntVar(&opts.sessions, "sessions", 8, "parallel SNMP sessions")
-	fs.UintVar(&opts.maxRep, "maxrep", 0, "GETBULK max-repetitions; raise it for a faster poll on healthy agents")
-	fs.BoolVar(&opts.ignoreBroken, "ignore-broken-configs", false, "start anyway when a config file does not parse, listing it as a warning")
-	fs.BoolVar(&opts.version, "version", false, "print version and exit")
-	fs.BoolVar(&opts.version, "v", false, "print version and exit")
+	register(fs, &opts)
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -90,22 +96,8 @@ func run() error {
 		fs.Usage()
 		return fmt.Errorf("both -h and -c are required")
 	}
-	// These end up in narrower types further down, where a typo would be
-	// truncated: -p 65536 would come out as 0 and then quietly become 161.
-	if opts.port == 0 || opts.port > 65535 {
-		return fmt.Errorf("-p %d is not a port", opts.port)
-	}
-	if opts.maxRep > math.MaxUint32 {
-		return fmt.Errorf("-maxrep %d is out of range", opts.maxRep)
-	}
-	if opts.sessions < 1 || opts.sessions > maxSessions {
-		return fmt.Errorf("-sessions %d is outside 1..%d", opts.sessions, maxSessions)
-	}
-	if given["i"] && opts.interval < 1 {
-		return fmt.Errorf("-i %d: an interval of less than a second polls the device to death", opts.interval)
-	}
-	if given["discover"] && opts.discovery == 0 {
-		return fmt.Errorf("-discover 0: use a negative value to walk once at startup")
+	if err := validate(opts, given); err != nil {
+		return err
 	}
 
 	set, err := config.Load(config.SearchDirs())
@@ -153,7 +145,7 @@ func run() error {
 	}
 	defer poller.Close()
 
-	interval := config.Seconds(set.Settings.Interval, 10)
+	interval := config.Seconds(set.Settings.Interval, config.DefaultInterval)
 	// Discovery keeps pace with the polls unless told otherwise; it runs
 	// alongside them on its own sessions.
 	discovery := config.Seconds(set.Settings.Discovery, int(interval.Seconds()))
@@ -164,6 +156,37 @@ func run() error {
 	// The table stays on screen, so give the shell prompt its own line.
 	fmt.Println()
 	return err
+}
+
+// validate rejects values that would otherwise fail somewhere far from the
+// flag that caused them: silently truncated to a narrower type, or turned into
+// a device-shaped error message by the SNMP library.
+func validate(opts options, given map[string]bool) error {
+	// -p 65536 would come out as uint16(0) and then quietly become 161.
+	if opts.port == 0 || opts.port > 65535 {
+		return fmt.Errorf("-p %d is not a port", opts.port)
+	}
+	if opts.maxRep > math.MaxUint32 {
+		return fmt.Errorf("-maxrep %d is out of range", opts.maxRep)
+	}
+	if opts.sessions < 1 || opts.sessions > maxSessions {
+		return fmt.Errorf("-sessions %d is outside 1..%d", opts.sessions, maxSessions)
+	}
+	if given["i"] && opts.interval < config.MinInterval {
+		return fmt.Errorf("-i %d: an interval of less than a second polls the device to death", opts.interval)
+	}
+	// A negative -discover is a real setting: walk once and never again. Between
+	// that and the minimum there is nothing sensible — the two walks are the
+	// expensive half, and back to back they are all the agent would be doing.
+	if least := config.MinInterval * time.Second; given["discover"] && opts.discovery >= 0 && opts.discovery < least {
+		return fmt.Errorf("-discover %v: use at least %v, or a negative value to walk once at startup", opts.discovery, least)
+	}
+	// gosnmp turns a non-positive timeout into a deadline of "now", so every
+	// request fails with a message that reads like the device's fault.
+	if opts.timeout <= 0 {
+		return fmt.Errorf("-timeout %v must be positive", opts.timeout)
+	}
+	return nil
 }
 
 // configWarnings decides what a file that would not parse means. Refusing to
@@ -180,13 +203,15 @@ func configWarnings(broken []error, ignore bool) ([]string, error) {
 	}
 	warnings := make([]string, 0, len(broken))
 	for _, err := range broken {
-		// One warning is one line: the info block sizes itself by the number
-		// of entries, so a yaml error's own line breaks would be cut off.
-		warnings = append(warnings, "ignored config: "+strings.Join(strings.Fields(err.Error()), " "))
+		warnings = append(warnings, poll.Warning("ignored config", err))
 	}
 	return warnings, nil
 }
 
+// usage is written by hand rather than from fs.PrintDefaults, which sorts
+// alphabetically and puts every flag on two lines. TestUsageListsEveryFlag
+// guards the obvious way this goes wrong — a flag added here or there but not
+// in both.
 func usage(fs *flag.FlagSet) func() {
 	return func() {
 		out := fs.Output()

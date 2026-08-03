@@ -30,21 +30,25 @@ type Row struct {
 	InPkts    *int64 // packets/s
 	OutPkts   *int64 // packets/s
 	InErrors  *int64 // errors/s
-	// Fresh reports whether these values came back during the current poll.
-	// A stale row is showing what the previous poll found, which beats
-	// blanking it while the agent is still answering.
+	// Fresh reports whether the figures in this row were computed from the
+	// current poll. Without it the row shows what an earlier poll found — which
+	// beats blanking it while the agent is still answering — or nothing yet,
+	// for a port with no reading to compare against.
 	Fresh bool
 }
 
-// Reading is one of the extra values above the table, already judged against
-// its profile.
+// empty reports that this poll produced no figure at all for the row.
+func (r Row) empty() bool {
+	return r.InOctets == nil && r.OutOctets == nil &&
+		r.InPkts == nil && r.OutPkts == nil && r.InErrors == nil
+}
+
 type Reading struct {
 	Name    string
 	Value   string
 	IsError bool
 }
 
-// Snapshot is one complete poll of a device.
 type Snapshot struct {
 	SysName  string
 	CPU      string
@@ -57,7 +61,6 @@ type Snapshot struct {
 	Complete bool
 }
 
-// Options configures a Poller.
 type Options struct {
 	Target Target
 	Config *config.Set
@@ -66,7 +69,6 @@ type Options struct {
 	// Readings includes the profile's extra readings (temperature, alarms).
 	// Off by default; they take screen rows away from the interface table.
 	Readings bool
-	// Sessions is the number of parallel SNMP conversations.
 	Sessions int
 	// Warnings are shown above the poll's own, for trouble found before any
 	// polling started — a config file that would not parse, say.
@@ -76,7 +78,6 @@ type Options struct {
 // Poller keeps the SNMP sessions and the previous counter readings needed to
 // compute rates.
 type Poller struct {
-	opts    Options
 	profile config.Profile
 	filters []*regexp.Regexp
 	pool    *pool
@@ -104,7 +105,6 @@ type Poller struct {
 	discoverMu    sync.Mutex // serialises Discover against itself
 	ifmu          sync.Mutex
 	ifaces        []iface
-	discovered    bool
 	walked        bool // a discovery has run to completion at least once
 	added         chan struct{}
 }
@@ -118,34 +118,36 @@ type counters struct {
 }
 
 type iface struct {
-	index int
-	name  string
-	alias string
-	// missed counts consecutive completed walks that did not list this
-	// interface. See retain.
-	missed int
+	index  int
+	name   string
+	alias  string
+	missed int // unconfirmed walks in a row; see missedWalksBeforeDrop
 }
 
-// missedWalksBeforeDrop is how often a walk has to come back without an
-// interface before it leaves the table. One is not enough: gosnmp reports a
-// walk the agent cut short as a clean end — it logs the error-status and
-// returns nil — so a truncated walk is indistinguishable from a table that
-// really shrank, and taking it at face value would delete hundreds of ports.
+// DefaultSessions is how many parallel conversations a poll is spread over.
+// Measured against a QFX5100 with 590 interfaces: 8 sessions poll in 5.8s where
+// 4 need 7.5s. Beyond that the agent, not the client, is the bottleneck.
+const DefaultSessions = 8
+
+// missedWalksBeforeDrop is how often an interface has to go unconfirmed before
+// it leaves the list. One is not enough: gosnmp reports a walk the agent cut
+// short as a clean end — it logs the error-status and returns nil — so a
+// truncated walk is indistinguishable from a table that really shrank, and
+// taking it at face value would delete hundreds of ports.
 const missedWalksBeforeDrop = 2
+
+func (i iface) outOfStrikes() bool { return i.missed+1 >= missedWalksBeforeDrop }
 
 // New opens the sessions, reads sysDescr and resolves the matching profile.
 func New(ctx context.Context, opts Options) (*Poller, error) {
 	if opts.Sessions <= 0 {
-		// Measured against a QFX5100 with 590 interfaces: 8 sessions poll in
-		// 5.8s where 4 need 7.5s. Beyond that the agent, not the client, is
-		// the bottleneck.
-		opts.Sessions = 8
+		opts.Sessions = DefaultSessions
 	}
 	if opts.Target.Port == 0 {
 		opts.Target.Port = 161
 	}
 
-	p := &Poller{opts: opts, prev: map[int]counters{},
+	p := &Poller{prev: map[int]counters{},
 		batchSize: min(maxVarbindsPerGet, gosnmp.MaxOids),
 		added:     make(chan struct{}, 1), warnings: opts.Warnings}
 
@@ -209,16 +211,17 @@ func New(ctx context.Context, opts Options) (*Poller, error) {
 	return p, nil
 }
 
-// SysDescr is the sysDescr the profile was selected with.
 func (p *Poller) SysDescr() string { return p.sysDescr }
 
-// Profile is the merged device profile in use.
 func (p *Poller) Profile() config.Profile { return p.profile }
 
+// Close releases the sessions. New calls it on a half-built Poller when a dial
+// fails, so both pools may still be nil.
 func (p *Poller) Close() {
-	p.pool.Close()
-	if p.discoveryPool != nil {
-		p.discoveryPool.Close()
+	for _, pl := range []*pool{p.pool, p.discoveryPool} {
+		if pl != nil {
+			pl.Close()
+		}
 	}
 }
 
@@ -282,8 +285,7 @@ func (p *Poller) Discover(ctx context.Context) error {
 	return nil
 }
 
-// discovery accumulates one Discover run. Values arrive from two walks at
-// once, and each one that completes an interface is published immediately.
+// discovery accumulates one Discover run, fed by both walks at once.
 type discovery struct {
 	poller  *Poller
 	mu      sync.Mutex
@@ -324,25 +326,16 @@ func (d *discovery) publish(index int) {
 	}
 }
 
-// Interfaces is the number of interfaces currently on the list.
 func (p *Poller) Interfaces() int {
 	p.ifmu.Lock()
 	defer p.ifmu.Unlock()
 	return len(p.ifaces)
 }
 
-func (p *Poller) currentInterfaces() []iface {
-	p.ifmu.Lock()
-	defer p.ifmu.Unlock()
-	return slices.Clone(p.ifaces)
-}
-
-// takeInterfaces is currentInterfaces for the poll about to read them, and it
-// clears any pending Added signal on the way out. Everything published so far
-// is in this list and is about to be fetched, so waking up for it afterwards
-// would poll the same set twice. An interface arriving after this point sets
-// the signal again and is not in the list — which is exactly the case the
-// wake-up is for.
+// takeInterfaces copies the list for the poll about to read it and clears any
+// pending Added signal: everything in the copy is about to be fetched, so
+// waking up for it again would poll the same set twice. One arriving after this
+// sets the signal anew and is not in the copy — which is the case it is for.
 func (p *Poller) takeInterfaces() []iface {
 	p.ifmu.Lock()
 	defer p.ifmu.Unlock()
@@ -353,9 +346,7 @@ func (p *Poller) takeInterfaces() []iface {
 	return slices.Clone(p.ifaces)
 }
 
-// upsert publishes one interface, keeping the list ordered by ifIndex. This
-// runs while a discovery is still walking, so polls can already work with the
-// interfaces found so far.
+// upsert publishes one interface, keeping the list ordered by ifIndex.
 func (p *Poller) upsert(in iface) {
 	p.ifmu.Lock()
 	defer p.ifmu.Unlock()
@@ -369,15 +360,12 @@ func (p *Poller) upsert(in iface) {
 		p.ifaces = slices.Insert(p.ifaces, at, in)
 		p.signalAdded()
 	}
-	p.discovered = true
 }
 
-// Added fires when the first discovery publishes an interface nobody has
-// polled yet, so the caller can fetch its values instead of waiting out the
-// interval. It goes quiet once a walk has completed: from then on the list is
-// known and a port appearing is no reason to break the rhythm.
-// Buffered by one, so a walk finding hundreds of ports coalesces into a single
-// wake-up rather than queueing one poll per port.
+// Added fires while the first discovery is still publishing interfaces, so the
+// caller can fetch them instead of waiting out the interval. It goes quiet once
+// a walk has completed. Buffered by one: a walk finding hundreds of ports
+// coalesces into a single wake-up.
 func (p *Poller) Added() <-chan struct{} { return p.added }
 
 // signalAdded must be called with ifmu held.
@@ -401,7 +389,7 @@ func (p *Poller) retain(kept map[int]bool) {
 	defer p.ifmu.Unlock()
 
 	p.ifaces = slices.DeleteFunc(p.ifaces, func(i iface) bool {
-		return !kept[i.index] && i.missed+1 >= missedWalksBeforeDrop
+		return !kept[i.index] && i.outOfStrikes()
 	})
 	for i := range p.ifaces {
 		if kept[p.ifaces[i].index] {
@@ -410,31 +398,43 @@ func (p *Poller) retain(kept map[int]bool) {
 			p.ifaces[i].missed++
 		}
 	}
-	p.discovered = true
 	p.walked = true
 }
 
-// forget drops interfaces the agent no longer knows about.
+// forget records that a poll found these interfaces gone, with a strike rather
+// than a deletion: a port with no counters at all keeps turning up in ifName, so
+// dropping it every poll only for discovery to put it back makes the row blink.
+// The row is already off the table either way; this decides when polling stops.
 func (p *Poller) forget(gone map[int]bool) {
 	if len(gone) == 0 {
 		return
 	}
 	p.ifmu.Lock()
-	p.ifaces = slices.DeleteFunc(p.ifaces, func(i iface) bool { return gone[i.index] })
-	p.ifmu.Unlock()
+	defer p.ifmu.Unlock()
+
+	p.ifaces = slices.DeleteFunc(p.ifaces, func(i iface) bool {
+		return gone[i.index] && i.outOfStrikes()
+	})
+	for i := range p.ifaces {
+		if gone[p.ifaces[i].index] {
+			p.ifaces[i].missed++
+		}
+	}
 }
 
 // Poll reads the counters of the interfaces Discover has published so far and
-// returns the rates since the previous call. It never waits for a discovery:
-// on a device that takes minutes to walk, the first ports are polled while the
-// rest are still being found. With no interfaces known yet it returns an empty
-// table rather than an error.
+// returns the rates since the previous call. It never waits for a discovery, so
+// on a device that takes minutes to walk the first ports are polled while the
+// rest are still being found; with none known yet the table is empty, not an
+// error.
 //
-// onUpdate, if given, receives the table as it fills up: once with every
-// interface named but no values yet, then after each batch of counters comes
-// back. On a loaded agent that turns a screen that sits empty for seconds
-// into one that populates row by row. It is called from the goroutine that
-// received the data, and the snapshot it gets is not touched again.
+// One goroutine at a time: a second Poll would write the counter map while the
+// first reads it. Discover may run alongside, on its own lock and sessions.
+//
+// onUpdate, if given, receives the table as it fills up — once with the names
+// alone, then after each batch — which is what populates the screen row by row
+// instead of leaving it empty for seconds. It runs on the goroutine that
+// received the data.
 func (p *Poller) Poll(ctx context.Context, onUpdate func(*Snapshot)) (*Snapshot, error) {
 	start := time.Now()
 	p.sent.Store(0)
@@ -522,24 +522,19 @@ func (p *Poller) Poll(ctx context.Context, onUpdate func(*Snapshot)) (*Snapshot,
 	gone := vanished(st)
 	st.mu.Unlock()
 
-	// An interface that was removed since the last discovery answers every
-	// counter with noSuchInstance. Drop it now instead of showing a frozen
-	// row until the next discovery run.
 	p.forget(gone)
 
 	p.remember(st, final.Rows, start)
 	return final, nil
 }
 
-// vanished lists interfaces the agent explicitly denied knowing: the row was
-// answered, that answer was a noSuchObject/noSuchInstance, and not one counter
-// came back. A timeout leaves done unset, and a response that simply omitted
-// the varbinds carries no denial — neither may pass for a removed port.
-// The caller must hold st.mu.
+// vanished lists interfaces the agent denied knowing. A timeout leaves done
+// unset and a response without varbinds carries no denial: neither may pass for
+// a removed port. The caller must hold st.mu.
 func vanished(st *state) map[int]bool {
 	var gone map[int]bool
 	for i, ifc := range st.ifaces {
-		if st.done[i] && st.raw[i].denied && st.raw[i].empty() {
+		if st.done[i] && st.raw[i].gone() {
 			if gone == nil {
 				gone = make(map[int]bool)
 			}
@@ -549,9 +544,17 @@ func vanished(st *state) map[int]bool {
 	return gone
 }
 
-// empty reports that not one standard counter came back with a value.
+// gone is the one test for "this port is not there any more", shared by
+// vanished and buildRows so the table and the interface list cannot disagree
+// about it.
+func (c counters) gone() bool { return c.denied && c.empty() }
+
+// empty reports that not one counter came back with a value — the vendor's own
+// per-second objects included, because a port that reports only those still has
+// everything the table needs.
 func (c counters) empty() bool {
-	return !c.inOct.ok && !c.outOct.ok && !c.inPkt.ok && !c.outPkt.ok && !c.errIn.ok
+	return !c.inOct.ok && !c.outOct.ok && !c.inPkt.ok && !c.outPkt.ok && !c.errIn.ok &&
+		!c.secInOct.ok && !c.secOutOct.ok && !c.secInPkt.ok && !c.secOutPkt.ok
 }
 
 // snapshot renders the current state. The caller must hold st.mu, and Poll
@@ -621,6 +624,45 @@ type column struct {
 
 type cell struct{ row, col int }
 
+// varbindGetter is the one thing readCounters and getAll need from a session,
+// which is what lets both be exercised without an agent.
+type varbindGetter interface {
+	Get(oids []string) (*gosnmp.SnmpPacket, error)
+}
+
+// fetch is a GET whose SNMP error-status counts as an error. gosnmp leaves that
+// status in the packet and reports nothing, so a tooBig would otherwise read as
+// a valid but empty answer.
+func fetch(c varbindGetter, oids []string) (*gosnmp.SnmpPacket, error) {
+	res, err := c.Get(oids)
+	if err != nil {
+		return nil, err
+	}
+	if err := responseError(res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// assign maps the varbinds of one response onto the rows and columns they belong
+// to. Getting this wrong does not crash anything — it shows one interface's
+// counters under another — so it is a function of its own, testable without an
+// agent. The caller must hold st.mu.
+func assign(st *state, cols []column, where map[string]cell, res *gosnmp.SnmpPacket) {
+	for _, pdu := range res.Variables {
+		at, ok := where[trimOID(pdu.Name)]
+		if !ok {
+			// Not something we asked for, or an interface that has since left
+			// the list. Either way there is no row for it.
+			continue
+		}
+		cols[at.col].assign(&st.raw[at.row], pduValue(pdu))
+		if denied(pdu) {
+			st.raw[at.row].denied = true
+		}
+	}
+}
+
 // readCounters fetches every column of every selected interface with plain
 // GETs, spread over the session pool. Each request carries whole interfaces
 // only, so a response always completes the rows it covers.
@@ -648,23 +690,13 @@ func (p *Poller) readCounters(ctx context.Context, st *state, cols []column, onB
 				}
 			}
 			return p.pool.with(ctx, func(c *gosnmp.GoSNMP) error {
-				res, err := c.Get(oids)
-				if err == nil {
-					err = responseError(res)
-				}
+				res, err := fetch(c, oids)
 				if err != nil {
 					return err
 				}
 				st.mu.Lock()
 				defer st.mu.Unlock()
-				for _, pdu := range res.Variables {
-					if at, ok := where[trimOID(pdu.Name)]; ok {
-						cols[at.col].assign(&st.raw[at.row], pduValue(pdu))
-						if denied(pdu) {
-							st.raw[at.row].denied = true
-						}
-					}
-				}
+				assign(st, cols, where, res)
 				// Only now are these rows known to be answered — an error
 				// above leaves them pending, so they keep the last values
 				// instead of being read as interfaces that went away.
@@ -723,8 +755,8 @@ func (p *Poller) interval(uptime value, now time.Time) float64 {
 			return 0
 		}
 		// Only a clock that actually moved on can measure anything. Equal ticks
-		// happen with -i 0 on a quick device, and for good on an agent whose
-		// sysUpTime is stuck — returning 0 there would print "-" in every
+		// come from two refreshes inside one tick, or for good from an agent
+		// whose sysUpTime is stuck — returning 0 there would print "-" in every
 		// single cell instead of falling through to the wall clock.
 		if p.baseUptime.ok && uptime.n > p.baseUptime.n {
 			// TimeTicks are hundredths of a second.
@@ -742,9 +774,9 @@ func (p *Poller) interval(uptime value, now time.Time) float64 {
 func (p *Poller) buildRows(st *state) []Row {
 	rows := make([]Row, 0, len(st.ifaces))
 	for i, ifc := range st.ifaces {
-		// The agent answered, but denied knowing any of this interface's
-		// counters: it has been removed since the last discovery.
-		if i < len(st.done) && st.done[i] && st.raw[i].empty() {
+		// The agent answered and denied knowing this interface at all: it has
+		// been removed since the last discovery.
+		if st.done[i] && st.raw[i].gone() {
 			continue
 		}
 
@@ -754,21 +786,8 @@ func (p *Poller) buildRows(st *state) []Row {
 			Alias: ifc.alias,
 		}
 
-		// Still waiting on this interface: carry the previous poll's numbers
-		// instead of blanking the row, and leave Fresh unset to say so.
-		if i < len(st.done) && !st.done[i] {
-			if old, ok := p.lastRows[ifc.index]; ok {
-				row.InOctets, row.OutOctets = old.InOctets, old.OutOctets
-				row.InPkts, row.OutPkts = old.InPkts, old.OutPkts
-				row.InErrors = old.InErrors
-			}
-			rows = append(rows, row)
-			continue
-		}
-
 		cur := st.raw[i]
-		old, seen := p.prev[ifc.index]
-		if seen {
+		if old, seen := p.prev[ifc.index]; seen && st.done[i] {
 			row.InOctets = rate(cur.inOct, old.inOct, width64, st.secs)
 			row.OutOctets = rate(cur.outOct, old.outOct, width64, st.secs)
 			row.InPkts = rate(cur.inPkt, old.inPkt, width32, st.secs)
@@ -777,7 +796,7 @@ func (p *Poller) buildRows(st *state) []Row {
 		}
 
 		// A vendor that already reports a rate is more accurate than our own
-		// difference and works on the very first poll.
+		// difference and works on the very first poll, with no baseline.
 		if v := scale(cur.secInOct, p.profile.SecValueFactor); v != nil {
 			row.InOctets = v
 		}
@@ -789,6 +808,20 @@ func (p *Poller) buildRows(st *state) []Row {
 		}
 		if v := scale(cur.secOutPkt, 1); v != nil {
 			row.OutPkts = v
+		}
+
+		// Nothing came of it — no response, one that arrived without its
+		// varbinds, or a port seen for the first time. Carry the previous poll's
+		// numbers rather than blanking the row, and leave Fresh unset to say
+		// they are old.
+		if row.empty() {
+			if old, ok := p.lastRows[ifc.index]; ok {
+				row.InOctets, row.OutOctets = old.InOctets, old.OutOctets
+				row.InPkts, row.OutPkts = old.InPkts, old.OutPkts
+				row.InErrors = old.InErrors
+			}
+			rows = append(rows, row)
+			continue
 		}
 		row.Fresh = true
 		rows = append(rows, row)
@@ -802,7 +835,7 @@ func (p *Poller) remember(st *state, rows []Row, start time.Time) {
 	for i, ifc := range st.ifaces {
 		// Only interfaces that answered may seed the next delta; a missing
 		// reading would make the next rate wrong.
-		if i < len(st.done) && st.done[i] {
+		if st.done[i] {
 			counters[ifc.index] = st.raw[i]
 		}
 	}
@@ -852,13 +885,10 @@ func evaluate(infos []*config.AddInfo, vars map[string]gosnmp.SnmpPDU) []Reading
 // them keyed by the OID that was asked for. On error it returns what the
 // earlier chunks did deliver, so a caller that can live without the rest does
 // not have to throw those away too.
-func getAll(c *gosnmp.GoSNMP, oids []string) (map[string]gosnmp.SnmpPDU, error) {
+func getAll(c varbindGetter, oids []string) (map[string]gosnmp.SnmpPDU, error) {
 	out := make(map[string]gosnmp.SnmpPDU, len(oids))
 	for _, batch := range chunk(oids, gosnmp.MaxOids) {
-		res, err := c.Get(batch)
-		if err == nil {
-			err = responseError(res)
-		}
+		res, err := fetch(c, batch)
 		if err != nil {
 			return out, err
 		}
@@ -914,21 +944,13 @@ func chunk(oids []string, size int) [][]string {
 	return out
 }
 
-// parallel runs every task concurrently and joins their errors. Concurrency is
-// bounded by the session pool the tasks borrow from.
 // Warning renders an error as one line of display. Two reasons it cannot just
 // be err.Error(): the info block gives every warning a single row, so the
 // newlines errors.Join puts between its parts would be cut off — and against a
 // mute agent that error carries one entry per request. Identical messages are
 // counted instead of repeated, because fifty timeouts are one fact.
 func Warning(prefix string, err error) string {
-	var parts []error
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		parts = joined.Unwrap()
-	} else {
-		parts = []error{err}
-	}
-
+	parts := flatten(err)
 	seen := make(map[string]int, len(parts))
 	var order []string
 	for _, e := range parts {
@@ -952,6 +974,25 @@ func Warning(prefix string, err error) string {
 	return prefix + ": " + strings.Join(msgs, "; ")
 }
 
+// flatten splits a joined error into its parts, nested joins included. It stops
+// at anything else: an error wrapping another carries context in its own message
+// ("file.device: …"), and unwrapping that would throw the context away.
+func flatten(err error) []error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return []error{err}
+	}
+	var out []error
+	for _, e := range joined.Unwrap() {
+		if e != nil {
+			out = append(out, flatten(e)...)
+		}
+	}
+	return out
+}
+
+// parallel runs every task concurrently and joins their errors. Concurrency is
+// bounded by the session pool the tasks borrow from.
 func parallel(tasks []func() error) error {
 	var wg sync.WaitGroup
 	errs := make([]error, len(tasks))

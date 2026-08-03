@@ -261,7 +261,7 @@ func TestEvaluateMinMax(t *testing.T) {
 	if _, isErr, _ := max.Evaluate("40"); isErr {
 		t.Error("40 should not exceed a max of 40")
 	}
-	// Agents like to append a unit; Ruby's to_i ignored it and so must we.
+	// Agents like to append a unit, and it must not get in the way.
 	if _, isErr, _ := max.Evaluate("55 C"); !isErr {
 		t.Error(`"55 C" should be read as 55`)
 	}
@@ -273,11 +273,38 @@ func TestEvaluateMinMax(t *testing.T) {
 }
 
 func TestParseInt(t *testing.T) {
+	// Leading digits count, the rest is ignored — agents like to append a unit.
 	for in, want := range map[string]int64{
-		"42": 42, "31 C": 31, "noSuchObject": 0, "": 0, "-7": -7, " 8 ": 8,
+		"42": 42, "31 C": 31, "-7": -7, " 8 ": 8, "100%": 100,
 	} {
-		if got := parseInt(in); got != want {
-			t.Errorf("parseInt(%q) = %d, want %d", in, got, want)
+		got, numeric := parseInt(in)
+		if got != want || !numeric {
+			t.Errorf("parseInt(%q) = %d, %v, want %d, true", in, got, numeric, want)
+		}
+	}
+	// No digits at all is not the number zero.
+	for _, in := range []string{"noSuchObject", "noSuchInstance", "", "NO", "-"} {
+		if got, numeric := parseInt(in); numeric {
+			t.Errorf("parseInt(%q) = %d, true — want it reported as non-numeric", in, got)
+		}
+	}
+}
+
+// A max reading whose OID stopped answering used to look perfectly healthy:
+// parseInt gave 0, and 0 is below every limit. min flagged it, max did not.
+func TestNonNumericReadingIsFlaggedForBothKinds(t *testing.T) {
+	for _, kind := range []Kind{KindMax, KindMin} {
+		info := &AddInfo{Kind: kind, Limit: 40}
+		out, isErr, ok := info.Evaluate("noSuchInstance")
+		if !ok {
+			t.Errorf("%s: reading dropped entirely", kind)
+			continue
+		}
+		if !isErr {
+			t.Errorf("%s: noSuchInstance passed as a value within limits", kind)
+		}
+		if out != "noSuchInstance" {
+			t.Errorf("%s: shows %q, want the raw answer", kind, out)
 		}
 	}
 }

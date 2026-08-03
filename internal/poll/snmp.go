@@ -124,9 +124,9 @@ type value struct {
 	ok bool
 }
 
-// pduString renders a varbind the way the Ruby SNMP library did. The exception
-// markers matter: riverstone.device tests for the literal "noSuchObject" to
-// detect a missing power supply.
+// pduString renders a varbind as text. The exception markers are spelled out on
+// purpose: riverstone.device tests for the literal "noSuchObject" to detect a
+// missing power supply.
 func pduString(p gosnmp.SnmpPDU) string {
 	switch p.Type {
 	case gosnmp.NoSuchObject:

@@ -2,8 +2,10 @@ package poll
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +36,7 @@ func TestDiscoveryFiltersAndOrders(t *testing.T) {
 	if want := []int{1, 3, 5}; !reflect.DeepEqual(indexesOf(p), want) {
 		t.Errorf("selected %v, want %v — and sorted by ifIndex", indexesOf(p), want)
 	}
-	if got := p.currentInterfaces()[0].name; got != "ge-0/0/0" {
+	if got := listOf(p)[0].name; got != "ge-0/0/0" {
 		t.Errorf("name = %q", got)
 	}
 }
@@ -50,7 +52,7 @@ func TestDiscoveryPublishesWhileWalking(t *testing.T) {
 	if got := p.Interfaces(); got != 1 {
 		t.Fatalf("%d interfaces after the first value, want 1", got)
 	}
-	if got := p.currentInterfaces()[0].name; got != "xe-0/0/0" {
+	if got := listOf(p)[0].name; got != "xe-0/0/0" {
 		t.Errorf("name = %q, want the interface usable right away", got)
 	}
 }
@@ -71,7 +73,7 @@ func TestDiscoveryFillsTheAliasInLater(t *testing.T) {
 	}
 
 	d.alias(7, "customer uplink")
-	got := p.currentInterfaces()[0]
+	got := listOf(p)[0]
 	if got.alias != "customer uplink" {
 		t.Errorf("alias = %q, want it filled in", got.alias)
 	}
@@ -195,9 +197,17 @@ func signalled(p *Poller) bool {
 	}
 }
 
+// listOf reads the interface list without the drain takeInterfaces does, so a
+// test can look at it without consuming the wake-up signal.
+func listOf(p *Poller) []iface {
+	p.ifmu.Lock()
+	defer p.ifmu.Unlock()
+	return slices.Clone(p.ifaces)
+}
+
 func indexesOf(p *Poller) []int {
 	var out []int
-	for _, i := range p.currentInterfaces() {
+	for _, i := range listOf(p) {
 		out = append(out, i.index)
 	}
 	return out
@@ -288,12 +298,41 @@ func TestBuildRowsKeepsPreviousValuesWhilePending(t *testing.T) {
 	if rows[0].Fresh {
 		t.Error("a pending row must not be marked fresh")
 	}
-	// Interface 2 answered but has no history, so it legitimately has no rate.
-	if !rows[1].Fresh {
-		t.Error("a row whose varbinds all arrived is fresh")
-	}
+	// Interface 2 answered but has no history, so there is no rate to show yet.
+	// The mark says "these figures are from this poll", and there are none.
 	if rows[1].InOctets != nil {
 		t.Errorf("unseen interface = %v, want no value", deref(rows[1].InOctets))
+	}
+	if rows[1].Fresh {
+		t.Error("a row showing no figures at all must not be marked fresh")
+	}
+}
+
+// An interface that was pending in one poll and answers in the next has no
+// baseline yet — but it does have the figures the pending row was showing.
+// Blanking them for one round and then filling them in again is a flicker with
+// no information in it.
+func TestBuildRowsKeepsValuesUntilThereIsABaseline(t *testing.T) {
+	previous := int64(4242)
+	p := &Poller{
+		profile:  config.Profile{SecValueFactor: 1},
+		lastRows: map[int]Row{1: {Index: 1, InOctets: &previous}},
+		prev:     map[int]counters{}, // answered last time, but nothing recorded
+	}
+	st := &state{
+		ifaces: []iface{{index: 1, name: "xe-0/0/0"}},
+		raw:    []counters{{inOct: val(7), outOct: val(7), inPkt: val(1), outPkt: val(1), errIn: val(0)}},
+		secs:   10,
+		done:   []bool{true},
+	}
+
+	rows := p.buildRows(st)
+
+	if rows[0].InOctets == nil || *rows[0].InOctets != previous {
+		t.Errorf("row = %v, want the previous %d rather than a dash", deref(rows[0].InOctets), previous)
+	}
+	if rows[0].Fresh {
+		t.Error("those figures are not from this poll")
 	}
 }
 
@@ -399,6 +438,11 @@ func TestVanishedInterfaceIsDroppedFromTheTable(t *testing.T) {
 // port from the outside, and an agent replying tooBig produces precisely that.
 // Deleting the whole batch over it would empty the table in chunks of twelve.
 func TestASilentAnswerIsNotAremovedInterface(t *testing.T) {
+	previous := int64(500)
+	p := &Poller{
+		profile:  config.Profile{SecValueFactor: 1},
+		lastRows: map[int]Row{1: {Index: 1, InOctets: &previous}},
+	}
 	st := &state{
 		ifaces: []iface{{index: 1, name: "xe-0/0/0"}},
 		raw:    []counters{{}}, // answered, nothing assigned, no denial
@@ -407,6 +451,47 @@ func TestASilentAnswerIsNotAremovedInterface(t *testing.T) {
 
 	if gone := vanished(st); len(gone) != 0 {
 		t.Errorf("vanished = %v, want nothing dropped without an explicit denial", gone)
+	}
+	// The same rule has to hold for the table: dropping the row here made it
+	// disappear for one poll and come back in the next, in batch-sized blocks.
+	rows := p.buildRows(st)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows, want the interface kept on screen too", len(rows))
+	}
+	if rows[0].InOctets == nil || *rows[0].InOctets != previous {
+		t.Errorf("row = %v, want the previous value carried", deref(rows[0].InOctets))
+	}
+	if rows[0].Fresh {
+		t.Error("nothing came back for this row, so it is not fresh")
+	}
+}
+
+// A port that reports only the vendor's per-second objects has everything the
+// table needs. Counting it as empty threw exactly the rows away that
+// sec_value_factor exists for.
+func TestVendorOnlyCountersAreNotEmpty(t *testing.T) {
+	p := &Poller{profile: config.Profile{SecValueFactor: 8}}
+	st := &state{
+		ifaces: []iface{{index: 1, name: "et-0/0/0"}},
+		raw:    []counters{{secInOct: val(8000), secOutOct: val(16000)}},
+		secs:   10,
+		done:   []bool{true},
+	}
+
+	rows := p.buildRows(st)
+
+	if len(rows) != 1 {
+		t.Fatalf("%d rows, want the interface kept", len(rows))
+	}
+	if rows[0].InOctets == nil || *rows[0].InOctets != 1000 {
+		t.Errorf("in = %v, want the vendor rate 8000/8", deref(rows[0].InOctets))
+	}
+	if !rows[0].Fresh {
+		t.Error("those figures are from this poll")
+	}
+	// And it is not a removed port either.
+	if gone := vanished(st); len(gone) != 0 {
+		t.Errorf("vanished = %v, want nothing dropped", gone)
 	}
 }
 
@@ -438,18 +523,36 @@ func TestTimeoutIsNotMistakenForARemovedInterface(t *testing.T) {
 	}
 }
 
-func TestForgetRemovesFromTheInterfaceList(t *testing.T) {
+// forget is as sceptical as retain, and for the same reason: a port with no
+// counters at all keeps appearing in ifName, so deleting it every poll and
+// having the next discovery put it straight back would make the row blink.
+// The table does not wait for this — buildRows skips a denied interface — so
+// the only question here is when it stops being polled.
+func TestForgetNeedsTwoPollsToDropAnInterface(t *testing.T) {
 	p := &Poller{ifaces: []iface{{index: 1}, {index: 2}, {index: 3}}}
 
 	p.forget(map[int]bool{2: true})
-
-	if got := p.Interfaces(); got != 2 {
-		t.Errorf("%d interfaces left, want 2", got)
+	if want := []int{1, 2, 3}; !reflect.DeepEqual(indexesOf(p), want) {
+		t.Errorf("kept %v, want %v — one denial is not enough", indexesOf(p), want)
 	}
-	for _, i := range p.currentInterfaces() {
-		if i.index == 2 {
-			t.Error("interface 2 is still on the list")
-		}
+
+	p.forget(map[int]bool{2: true})
+	if want := []int{1, 3}; !reflect.DeepEqual(indexesOf(p), want) {
+		t.Errorf("kept %v, want %v after a second denial", indexesOf(p), want)
+	}
+}
+
+// A discovery that lists the port again clears its strikes, whichever of the
+// two put them there.
+func TestForgetAndRetainShareTheirStrikes(t *testing.T) {
+	p := &Poller{ifaces: []iface{{index: 1}, {index: 2}}}
+
+	p.forget(map[int]bool{2: true})          // denied by a poll
+	p.retain(map[int]bool{1: true, 2: true}) // but the walk still lists it
+	p.forget(map[int]bool{2: true})          // denied again
+
+	if want := []int{1, 2}; !reflect.DeepEqual(indexesOf(p), want) {
+		t.Errorf("kept %v, want %v — the walk cleared the earlier strike", indexesOf(p), want)
 	}
 }
 
@@ -731,5 +834,30 @@ func TestWarningFlattensASingleError(t *testing.T) {
 	}
 	if !strings.Contains(got, "second line") {
 		t.Errorf("%q lost the detail", got)
+	}
+}
+
+// Joins nest once the caller joins what it got from parallel(). Unwrapping has
+// to reach through that, but stop at a wrapped error: its own message carries
+// the context ("file.device: …") that unwrapping would throw away.
+func TestWarningFlattensNestedJoinsButKeepsContext(t *testing.T) {
+	nested := errors.Join(
+		errors.Join(errors.New("timeout"), errors.New("timeout")),
+		errors.New("agent reported TooBig"),
+	)
+
+	got := Warning("counters", nested)
+
+	if !strings.Contains(got, "timeout (x2)") {
+		t.Errorf("%q did not count the two nested timeouts", got)
+	}
+	if !strings.Contains(got, "TooBig") {
+		t.Errorf("%q lost the other failure", got)
+	}
+
+	// A wrapped error stays whole, context and all.
+	wrapped := fmt.Errorf("legacy.device: %w", errors.New("field :name not found"))
+	if got := Warning("ignored config", wrapped); !strings.Contains(got, "legacy.device: field :name not found") {
+		t.Errorf("%q lost the file name", got)
 	}
 }

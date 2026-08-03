@@ -226,3 +226,30 @@ func row(in, out, inPps, outPps, errs int64) poll.Row {
 		InErrors: &errs,
 	}
 }
+
+// Terminal columns, not characters: CJK and emoji take two. Counting runes laid
+// the columns out too narrow and skewed every row below.
+func TestVisibleLenCountsColumns(t *testing.T) {
+	cases := map[string]int{
+		"xe-0/0/0": 8,
+		"":         0,
+		"日本語":      6, // three characters, six columns
+		"a日":       3,
+	}
+	for in, want := range cases {
+		if got := visibleLen(in); got != want {
+			t.Errorf("visibleLen(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// Truncating has to respect that too, or a cut through a wide character leaves
+// the row one column too long and shifts everything to its right.
+func TestPadTruncatesWideCharactersByColumn(t *testing.T) {
+	if got := pad("日本語", 4, tview.AlignLeft); visibleLen(got) > 4 {
+		t.Errorf("pad(%q, 4) = %q, %d columns wide", "日本語", got, visibleLen(got))
+	}
+	if got := pad("日本語", 6, tview.AlignLeft); got != "日本語" {
+		t.Errorf("pad at exactly the width changed the string: %q", got)
+	}
+}

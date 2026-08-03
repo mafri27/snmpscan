@@ -126,8 +126,8 @@ Polling runs as two independent jobs.
 **Discovery** walks ifName and ifAlias, applies the filter and maintains the
 list of interfaces to show. It is by far the expensive half: those two walks
 are sequential by nature, since each GETBULK needs the OID the previous one
-returned. On a QFX5100 with 590 interfaces they are about 120 of 150 packets
-and take some 4s — on a loaded device with many logical interfaces, minutes.
+returned. On a QFX5100 whose ifName table has 590 entries they take some 3.4s —
+on a loaded device with many logical interfaces, minutes.
 
 It therefore publishes each interface the moment it is found rather than at
 the end of the walk, so polling starts on the first few ports while the rest
@@ -138,7 +138,8 @@ since it only saw a prefix of the table.
 request carries whole interfaces only — never a row split across two packets —
 so every response completes the rows it covers and goes straight on screen.
 These requests are independent of each other and run in parallel across
-`-sessions` connections. On the same QFX5100: 31 packets, 0.4s.
+`-sessions` connections. On the same QFX5100, 172 ports surviving the filter:
+37 requests, 0.42s.
 
 The two run on separate sessions and do not wait for each other. Discovery
 keeps pace with the polls by default; if it takes longer than one interval it

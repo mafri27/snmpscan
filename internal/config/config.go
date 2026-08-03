@@ -31,7 +31,7 @@ type Set struct {
 	Broken []error
 }
 
-// Settings holds the values that used to be constants in the Ruby version.
+// Settings are the global options from snmpscan.yml.
 // The intervals are pointers so that a file leaving one out keeps whatever a
 // less specific file set, rather than overwriting it with a zero.
 type Settings struct {
@@ -43,6 +43,9 @@ type Settings struct {
 	Thresholds Thresholds `yaml:"thresholds"`
 }
 
+// DefaultInterval applies when no snmpscan.yml sets one.
+const DefaultInterval = 10
+
 // MinInterval is the shortest poll interval that makes sense. Below a second
 // the poller spends the device's CPU rather than measuring it, and the agent's
 // own clock has no room to advance between two reads.
@@ -50,7 +53,7 @@ const MinInterval = 1
 
 // DefaultSettings applies when no snmpscan.yml exists anywhere.
 func DefaultSettings() Settings {
-	return Settings{Interval: ptr(10), Thresholds: DefaultThresholds()}
+	return Settings{Interval: ptr(DefaultInterval), Thresholds: DefaultThresholds()}
 }
 
 // Seconds resolves an optional interval, falling back to def when unset.
@@ -61,13 +64,15 @@ func Seconds(v *int, def int) time.Duration {
 	return time.Duration(*v) * time.Second
 }
 
-// SearchDirs lists the configuration directories from least to most specific,
-// so a file in the working directory wins over one in the home directory,
-// which in turn wins over /etc.
+// SearchDirs lists the configuration directories from least to most specific.
+// For snmpscan.yml that decides who wins: the working directory over the home
+// directory over /etc. Device profiles do not work that way — they all merge,
+// ordered by prio and name, so a local .device adds to what /etc already says
+// rather than replacing it.
 func SearchDirs() []string {
 	dirs := []string{"/etc/snmpscan"}
-	// The Ruby version globbed the literal string "~/.snmpscan/", which no
-	// shell ever expanded, so per-user configuration was silently ignored.
+	// Expanded here rather than left as "~/.snmpscan": no shell touches it on
+	// the way in, so a literal tilde would just never match a directory.
 	if home, err := os.UserHomeDir(); err == nil {
 		dirs = append(dirs, filepath.Join(home, ".snmpscan"))
 	}
@@ -75,8 +80,9 @@ func SearchDirs() []string {
 }
 
 // Load reads every *.device file plus the most specific snmpscan.yml found in
-// dirs. Missing directories are not an error; unreadable ones are. A file that
-// does not parse lands in Set.Broken and is skipped — see there.
+// dirs. A directory that is missing — or that cannot be listed — is skipped
+// silently, since the search path always includes places that need not exist.
+// A file that does not parse lands in Set.Broken; see there.
 func Load(dirs []string) (*Set, error) {
 	set := &Set{Settings: DefaultSettings()}
 
@@ -193,8 +199,9 @@ func loadSettings(file string) (*Settings, error) {
 	return &s, nil
 }
 
-// sortDevices puts low priority entries first so that later, more specific
-// ones overwrite them during a merge.
+// sortDevices puts low priority entries first so that later, more specific ones
+// overwrite them during a merge. Where prio and name are equal the read order
+// decides, which is why the sort has to be stable.
 func sortDevices(devs []*Device) {
 	sort.SliceStable(devs, func(i, j int) bool {
 		if devs[i].Prio != devs[j].Prio {
@@ -219,12 +226,11 @@ type Profile struct {
 }
 
 // Match merges all device entries whose name pattern is found in sysDescr.
-// Scalars are overwritten, filters and readings accumulate — the same
-// semantics the Ruby version had.
+// Scalars are overwritten, filters and readings accumulate.
 func (s *Set) Match(sysDescr string) Profile {
 	p := Profile{
-		// sysContact stood in for a CPU OID on unknown devices in the Ruby
-		// version; kept so those devices show the same header as before.
+		// sysContact stands in for a CPU OID on an unknown device, so its
+		// header reads the same as it always did.
 		CPUOID:         "1.3.6.1.2.1.1.4",
 		SecValueFactor: 1,
 		Thresholds:     s.Settings.Thresholds,
@@ -271,20 +277,23 @@ func NormalizeOID(s string) string {
 	return strings.TrimPrefix(strings.TrimSpace(s), ".")
 }
 
-// parseInt mimics Ruby's String#to_i: leading digits count, anything else
-// yields zero. Readings like "31 C" have to keep comparing as 31.
-func parseInt(s string) int64 {
+// parseInt reads the leading digits and ignores the rest, so a reading like
+// "31 C" still compares as 31. The second result says whether there were any
+// digits at all: "noSuchInstance" is not a temperature of zero, and a limit
+// must not silently pass judgement on it.
+func parseInt(s string) (int64, bool) {
 	s = strings.TrimSpace(s)
 	neg := strings.HasPrefix(s, "-")
 	if neg || strings.HasPrefix(s, "+") {
 		s = s[1:]
 	}
 	var n int64
-	for i := 0; i < len(s) && s[i] >= '0' && s[i] <= '9'; i++ {
-		n = n*10 + int64(s[i]-'0')
+	digits := 0
+	for ; digits < len(s) && s[digits] >= '0' && s[digits] <= '9'; digits++ {
+		n = n*10 + int64(s[digits]-'0')
 	}
 	if neg {
-		return -n
+		n = -n
 	}
-	return n
+	return n, digits > 0
 }

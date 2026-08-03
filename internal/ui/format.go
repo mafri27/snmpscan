@@ -3,10 +3,10 @@ package ui
 import (
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/mafri27/snmpscan/internal/config"
 	"github.com/mafri27/snmpscan/internal/poll"
+	"github.com/mattn/go-runewidth"
 	"github.com/rivo/tview"
 )
 
@@ -19,9 +19,9 @@ const (
 	StyleAlert
 )
 
-// Mbit converts a byte rate to the figure shown in the table. Decimal, as
-// interface speeds are quoted: the Ruby version divided by 1024 twice and so
-// reported Mibit/s under a Mbit/s label, about 5% low.
+// Mbit converts a byte rate to the figure shown in the table. Decimal, the way
+// interface speeds are quoted — dividing by 1024 would report Mibit/s under a
+// Mbit/s label, about 5% low.
 func Mbit(bytesPerSec int64) int64 { return bytesPerSec * 8 / 1_000_000 }
 
 // Kpps is the packet rate as shown, decimal like the Mbit/s figure beside it.
@@ -29,9 +29,7 @@ func Mbit(bytesPerSec int64) int64 { return bytesPerSec * 8 / 1_000_000 }
 // where the column rounds it down to 0.
 func Kpps(packetsPerSec int64) int64 { return packetsPerSec / 1000 }
 
-// classify picks a row's colour. A marked interface wins over an alert, which
-// in turn wins over a quiet row — the same precedence the Ruby version got out
-// of printing its escape codes in that order.
+// classify picks a row's colour: an alert wins over a quiet row.
 func classify(r poll.Row, t config.Thresholds) Style {
 	switch {
 	case isAlert(r, t.Alert):
@@ -97,8 +95,7 @@ func formatCount(v *int64) string {
 	return strconv.FormatInt(*v, 10)
 }
 
-// formatIndex keeps long ifIndex values from pushing the table apart, the way
-// the Ruby version truncated them.
+// formatIndex keeps a long ifIndex from pushing the table apart.
 func formatIndex(i int) string {
 	s := strconv.Itoa(i)
 	if len(s) > 7 {
@@ -111,9 +108,8 @@ func formatIndex(i int) string {
 // it, so a device without aliases does not lay out as if the column were gone.
 const minAliasWidth = 12
 
-// layout returns the display width of every column. The fixed widths are
-// inherited from the Ruby layout and are kept as long as the alias fits beside
-// them. Only when it would be cut off do the columns give way, and then only by
+// layout returns the display width of every column. The fixed widths are kept
+// as long as the alias fits beside them. Only when it would be cut off do the columns give way, and then only by
 // as much as the alias is short, taken from wherever the most space is going
 // unused — they do not collapse onto their content all at once.
 // A width of zero means "take whatever is left", which is the alias column.
@@ -178,7 +174,7 @@ func pad(s string, width, align int) string {
 	}
 	n := visibleLen(s)
 	if n > width {
-		return string([]rune(s)[:width])
+		return runewidth.Truncate(s, width, "")
 	}
 	gap := strings.Repeat(" ", width-n)
 	if align == tview.AlignRight {
@@ -187,4 +183,7 @@ func pad(s string, width, align int) string {
 	return s + gap
 }
 
-func visibleLen(s string) int { return utf8.RuneCountInString(s) }
+// visibleLen is how many terminal columns a string occupies, which is not the
+// same as how many characters it has: CJK and emoji take two. Counting runes
+// would lay the columns out too narrow and skew every row below.
+func visibleLen(s string) int { return runewidth.StringWidth(s) }

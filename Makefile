@@ -45,6 +45,8 @@ live:
 vet:
 	$(GO) vet ./...
 
+# Plain gofmt, so tabs. Not the 4 spaces the checkgo plugins use: gofmt -l
+# reports spaces as unformatted, and every CI check on GitHub trips over it.
 .PHONY: fmt
 fmt:
 	gofmt -l -w .

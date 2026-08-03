@@ -16,8 +16,8 @@ type Level struct {
 	Errors *int64 `yaml:"errors"`
 }
 
-// DefaultThresholds reproduces the constants that were hardcoded in the Ruby
-// version, so an installation without snmpscan.yml keeps its old colours.
+// DefaultThresholds is what the tool has always coloured by, so an
+// installation without snmpscan.yml keeps the colours it had.
 func DefaultThresholds() Thresholds {
 	return Thresholds{
 		Dim:   Level{Mbit: ptr(int64(5)), Pps: ptr(int64(100))},

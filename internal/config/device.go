@@ -60,13 +60,18 @@ type Case struct {
 // Matches reports whether the raw SNMP value hits this case. An empty test
 // matches anything, which the riverstone profiles rely on as a catch-all.
 func (c *Case) Matches(value string) bool {
+	if c.pattern == nil {
+		// Only UnmarshalYAML compiles the pattern, so a Case built any other
+		// way has none. Falling back to the literal beats a panic that would
+		// leave the terminal in full-screen mode.
+		return c.Test == ""
+	}
 	return c.pattern.MatchString(value)
 }
 
 // Evaluate returns the text to display for a reading and whether it should be
-// flagged. For KindSame the first matching case wins; the Ruby version printed
-// every match, so riverstone's "noSuchObject means ERROR" case showed up right
-// next to its own catch-all "OK".
+// flagged. For KindSame the first matching case wins — printing every match put
+// riverstone's "noSuchObject means ERROR" right next to its catch-all "OK".
 func (a *AddInfo) Evaluate(value string) (out string, isError bool, ok bool) {
 	switch a.Kind {
 	case KindSame:
@@ -76,10 +81,17 @@ func (a *AddInfo) Evaluate(value string) (out string, isError bool, ok bool) {
 			}
 		}
 		return "", false, false
-	case KindMax:
-		return value, parseInt(value) > a.Limit, true
-	case KindMin:
-		return value, parseInt(value) < a.Limit, true
+	case KindMax, KindMin:
+		n, numeric := parseInt(value)
+		if !numeric {
+			// An OID answering "noSuchInstance" or a word is not a value that
+			// happens to be within limits — it is a reading that is not there.
+			return value, true, true
+		}
+		if a.Kind == KindMax {
+			return value, n > a.Limit, true
+		}
+		return value, n < a.Limit, true
 	}
 	return "", false, false
 }

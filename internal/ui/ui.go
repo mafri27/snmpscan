@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	colMark = iota
+	colFresh = iota
 	colIfNr
 	colName
 	colIn
@@ -26,15 +26,15 @@ const (
 	colAlias
 )
 
-// Column widths carried over from the Ruby layout, each one short by the
-// separator tview inserts, so the table lines up the same way. The alias has
-// no width of its own — it takes the remaining space.
+// Column widths carried over from the previous layout, each one short by the
+// separator tview inserts, so the table lines up the same way. The alias has no
+// width of its own — it takes the remaining space.
 var columns = []struct {
 	title string
 	align int
 	width int
 }{
-	colMark:   {"", tview.AlignLeft, 1},
+	colFresh:  {"", tview.AlignLeft, 1},
 	colIfNr:   {"ifNr", tview.AlignLeft, 9},
 	colName:   {"Name", tview.AlignLeft, 29},
 	colIn:     {"Mbps in", tview.AlignRight, 9},
@@ -45,12 +45,18 @@ var columns = []struct {
 	colAlias:  {"Alias", tview.AlignLeft, 0},
 }
 
+// What a single run may take before it is abandoned and started over. Not
+// tuning knobs: a device answering slowly enough would otherwise stall a loop
+// for good, and a frozen interface list keeps Added() from ever going quiet.
+const (
+	pollBudget      = 2 * time.Minute
+	discoveryBudget = 15 * time.Minute
+)
+
 // warmupDelay caps how often a newly discovered interface may pull the next
 // poll forward. A shorter interval wins, so -i 1 keeps its own pace.
 const warmupDelay = 2 * time.Second
 
-// freshMark flags a row whose values arrived during the current poll; a blank
-// means the row is still showing what the previous poll found.
 const (
 	freshMark = "•"
 	staleMark = " "
@@ -67,7 +73,6 @@ const (
 // faster than a terminal can usefully repaint.
 const redrawInterval = 200 * time.Millisecond
 
-// UI drives the terminal application.
 type UI struct {
 	app    *tview.Application
 	header *tview.TextView
@@ -89,7 +94,6 @@ type UI struct {
 
 	mu          sync.Mutex
 	snap        *poll.Snapshot
-	pollErr     error
 	discoverErr error
 	nextPoll    time.Time
 	width       int
@@ -98,7 +102,6 @@ type UI struct {
 	order       map[int]int
 }
 
-// New builds the widget tree.
 func New(p *poll.Poller, host string, interval, discovery time.Duration) *UI {
 	u := &UI{
 		app: tview.NewApplication(),
@@ -227,10 +230,9 @@ func (u *UI) Run(ctx context.Context) error {
 		u.discoverLoop(ctx)
 	}()
 	go u.redrawLoop(ctx)
-	// A SIGTERM cancels the context, but tview draws on until told to stop.
-	// Waiting for the first draw matters: Stop is a no-op while there is no
-	// screen yet, so a signal arriving during startup would be swallowed and
-	// leave the table up with a frozen countdown and nothing polling it.
+	// A SIGTERM cancels the context, but tview draws on until told to stop —
+	// after the first draw, because Stop is a no-op while there is no screen and
+	// a signal during startup would otherwise be swallowed.
 	go func() {
 		<-ctx.Done()
 		<-u.ready
@@ -245,7 +247,11 @@ func (u *UI) Run(ctx context.Context) error {
 
 func (u *UI) pollLoop(ctx context.Context) {
 	for {
-		snap, err := u.poller.Poll(ctx, u.onPartial)
+		// Cancelled right after rather than deferred — this is a loop. The error
+		// is only ever the context; the rest arrives as warnings in the snapshot.
+		pollCtx, cancel := context.WithTimeout(ctx, pollBudget)
+		snap, _ := u.poller.Poll(pollCtx, u.onPartial)
+		cancel()
 		if ctx.Err() != nil {
 			return
 		}
@@ -256,7 +262,6 @@ func (u *UI) pollLoop(ctx context.Context) {
 		if snap != nil {
 			u.snap = snap
 		}
-		u.pollErr = err
 		u.nextPoll = time.Now().Add(u.interval)
 		u.dirty = true
 		u.mu.Unlock()
@@ -267,11 +272,10 @@ func (u *UI) pollLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-u.poller.Added():
-			// The first discovery hands over its interfaces one at a time.
-			// Sitting out the interval would leave the six ports found so far
-			// on screen while the other six hundred arrive unpolled, so cut
-			// the wait short — but not shorter than warmupDelay, or the polls
-			// would run back to back for the whole walk.
+			// The first discovery hands its interfaces over one at a time, so
+			// sitting out the interval would leave six of six hundred ports
+			// polled. Never shorter than warmupDelay, or this runs back to back
+			// for the length of the walk.
 			if !u.waitBefore(ctx, min(u.interval, warmupDelay)) {
 				return
 			}
@@ -305,7 +309,9 @@ func (u *UI) discoverLoop(ctx context.Context) {
 		// Runs straight away, and again once the interval has passed since it
 		// finished. A walk that outlasts the interval simply starts the next
 		// one late.
-		err := u.poller.Discover(ctx)
+		walkCtx, cancel := context.WithTimeout(ctx, discoveryBudget)
+		err := u.poller.Discover(walkCtx)
+		cancel()
 		if ctx.Err() != nil {
 			return
 		}
@@ -348,7 +354,12 @@ func (u *UI) redrawLoop(ctx context.Context) {
 		case <-t.C:
 			u.mu.Lock()
 			dirty := u.dirty
-			u.dirty = false
+			// Cleared only once the table has actually been rebuilt: before the
+			// first snapshot the draw bails out early, and clearing here would
+			// drop that update for good.
+			if u.snap != nil {
+				u.dirty = false
+			}
 			u.mu.Unlock()
 
 			// Blocks until the event loop has run this, and never returns once
@@ -369,7 +380,7 @@ func (u *UI) redrawLoop(ctx context.Context) {
 
 func (u *UI) drawHeader() {
 	u.mu.Lock()
-	snap, next, err := u.snap, u.nextPoll, u.pollErr
+	snap, next := u.snap, u.nextPoll
 	u.mu.Unlock()
 
 	var b strings.Builder
@@ -385,10 +396,10 @@ func (u *UI) drawHeader() {
 	// and not, which reads as flicker.
 	fmt.Fprintf(&b, "   [gray]%d ports[-]", u.poller.Interfaces())
 
+	// No error branch here on purpose: a poll no longer fails as a whole. What
+	// went wrong arrives as warnings above the table, per request, and the
+	// figures that did come back are still worth showing.
 	switch left := int(time.Until(next).Round(time.Second).Seconds()); {
-	case err != nil:
-		// One line, and a discovery failure carries one entry per walk.
-		fmt.Fprintf(&b, "   [red]%s[-]", tview.Escape(poll.Warning("error", err)))
 	case next.IsZero() || left <= 0:
 		b.WriteString("   [gray]polling…[-]")
 	default:
@@ -465,7 +476,14 @@ func (u *UI) drawReadings() {
 		return
 	}
 
-	lines := make([]string, 0, len(snap.Readings)+len(snap.Warnings)+1)
+	lines := make([]string, 0, len(snap.Readings)+len(snap.Warnings)+2)
+	// Which profiles the sysDescr matched. Only with -a, because that is when
+	// someone is looking at a profile's readings and wants to know which file
+	// produced them — an entry whose name pattern does not match is otherwise
+	// indistinguishable from one that has nothing to say.
+	if matched := u.poller.Profile().Matched; len(matched) > 0 {
+		lines = append(lines, fmt.Sprintf("[gray] %-28s %s[-]", "Profile", tview.Escape(strings.Join(matched, ", "))))
+	}
 	// A failed discovery belongs here rather than in the header: the values on
 	// screen are fine, it is the list of interfaces that may be out of date.
 	if discoverErr != nil {
@@ -536,7 +554,7 @@ func (u *UI) drawTable() {
 				SetSelectedStyle(selectedStyle(colour)).
 				SetAlign(columns[c].align).
 				SetExpansion(expansion(c))
-			if c == colMark {
+			if c == colFresh {
 				// What the row is, as opposed to where it sits — this is how
 				// the selection finds its interface again after a re-sort.
 				cell.SetReference(rows[i].Index)
@@ -562,7 +580,7 @@ func (u *UI) drawTable() {
 // selectedIndex is the ifIndex of the row the cursor is on, or -1 when there
 // is nothing selected yet.
 func selectedIndex(t *tview.Table, row int) int {
-	cell := t.GetCell(row, colMark)
+	cell := t.GetCell(row, colFresh)
 	if cell == nil {
 		return -1
 	}
@@ -599,7 +617,7 @@ func rowValues(row poll.Row) []string {
 		mark = freshMark
 	}
 	return []string{
-		colMark:   mark,
+		colFresh:  mark,
 		colIfNr:   formatIndex(row.Index),
 		colName:   row.Name,
 		colIn:     formatRate(row.InOctets),
@@ -631,8 +649,7 @@ func arrow(desc bool) string {
 	return "▲"
 }
 
-// expansion lets the alias soak up the leftover width instead of the fixed
-// 115-column arithmetic the Ruby version used.
+// expansion lets the alias soak up whatever width is left over.
 func expansion(col int) int {
 	if col == len(columns)-1 {
 		return 1
