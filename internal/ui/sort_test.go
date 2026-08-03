@@ -203,3 +203,55 @@ func indexes(rows []poll.Row) []int {
 }
 
 func i64(v int64) *int64 { return &v }
+
+// slices.SortFunc is not stable, and natCompare treats names that differ only
+// in leading zeroes as equal. Without a unique tiebreak those rows swap places
+// on every redraw, though the name sort is documented as deterministic.
+func TestSortIsDeterministicForEqualNames(t *testing.T) {
+	rows := []poll.Row{
+		{Index: 30, Name: "xe-0/0/07"},
+		{Index: 10, Name: "xe-0/0/7"}, // natCompare calls these two equal
+		{Index: 20, Name: "xe-0/0/07"},
+	}
+
+	first, _ := sortRows(rows, defaultOrder(SortName), true, nil)
+	want := indexOrder(first)
+	for range 20 {
+		got, _ := sortRows(rows, defaultOrder(SortName), true, nil)
+		if !reflect.DeepEqual(indexOrder(got), want) {
+			t.Fatalf("order changed between redraws: %v then %v", want, indexOrder(got))
+		}
+	}
+	// And it is the ifIndex that decides, so the order is predictable.
+	if !reflect.DeepEqual(want, []int{10, 20, 30}) {
+		t.Errorf("order = %v, want it settled by ifIndex", want)
+	}
+}
+
+// Same for the traffic sort, where equal rates are the normal case on an idle
+// device: every row reads 0.
+func TestSortByTrafficIsDeterministicForEqualRates(t *testing.T) {
+	zero := int64(0)
+	rows := []poll.Row{
+		{Index: 3, Name: "xe-0/0/1", InOctets: &zero, OutOctets: &zero},
+		{Index: 1, Name: "xe-0/0/1", InOctets: &zero, OutOctets: &zero},
+		{Index: 2, Name: "xe-0/0/1", InOctets: &zero, OutOctets: &zero},
+	}
+
+	first, _ := sortRows(rows, defaultOrder(SortTraffic), true, nil)
+	want := indexOrder(first)
+	for range 20 {
+		got, _ := sortRows(rows, defaultOrder(SortTraffic), true, nil)
+		if !reflect.DeepEqual(indexOrder(got), want) {
+			t.Fatalf("order changed between redraws: %v then %v", want, indexOrder(got))
+		}
+	}
+}
+
+func indexOrder(rows []poll.Row) []int {
+	out := make([]int, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.Index)
+	}
+	return out
+}

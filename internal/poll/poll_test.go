@@ -1,8 +1,10 @@
 package poll
 
 import (
+	"errors"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,13 +96,35 @@ func TestDiscoveryMatchesOnAliasToo(t *testing.T) {
 	}
 }
 
-func TestRetainDropsWhatTheWalkDidNotSee(t *testing.T) {
+// One walk without an interface is not proof that it is gone: gosnmp reports a
+// walk the agent cut short as a clean end, so a truncated walk looks exactly
+// like a table that shrank. Acting on it would delete hundreds of live ports.
+func TestRetainNeedsTwoWalksToDropAnInterface(t *testing.T) {
 	p := &Poller{ifaces: []iface{{index: 1}, {index: 2}, {index: 3}}}
 
 	p.retain(map[int]bool{1: true, 3: true})
+	if want := []int{1, 2, 3}; !reflect.DeepEqual(indexesOf(p), want) {
+		t.Errorf("kept %v, want %v — a single missing walk is not enough", indexesOf(p), want)
+	}
 
+	p.retain(map[int]bool{1: true, 3: true})
 	if want := []int{1, 3}; !reflect.DeepEqual(indexesOf(p), want) {
-		t.Errorf("kept %v, want %v", indexesOf(p), want)
+		t.Errorf("kept %v, want %v once a second walk missed it too", indexesOf(p), want)
+	}
+}
+
+// Turning up again clears the strike. Without that, an interface on a device
+// with the occasional truncated walk would collect misses and eventually
+// disappear although it was there all along.
+func TestRetainForgivesAnInterfaceThatComesBack(t *testing.T) {
+	p := &Poller{ifaces: []iface{{index: 1}, {index: 2}}}
+
+	p.retain(map[int]bool{1: true})          // 2 missed once
+	p.retain(map[int]bool{1: true, 2: true}) // and is back
+	p.retain(map[int]bool{1: true})          // missed once again
+
+	if want := []int{1, 2}; !reflect.DeepEqual(indexesOf(p), want) {
+		t.Errorf("kept %v, want %v — the earlier strike should be forgotten", indexesOf(p), want)
 	}
 }
 
@@ -198,8 +222,7 @@ func TestEmptyFilterMatchesEverything(t *testing.T) {
 
 func TestBuildRowsUsesVendorRates(t *testing.T) {
 	p := &Poller{
-		profile:   config.Profile{SecValueFactor: 8},
-		markIndex: 2,
+		profile: config.Profile{SecValueFactor: 8},
 		prev: map[int]counters{
 			1: {inOct: val(1000), outOct: val(2000), inPkt: val(10), outPkt: val(20), errIn: val(0)},
 		},
@@ -232,16 +255,10 @@ func TestBuildRowsUsesVendorRates(t *testing.T) {
 	if got := *rows[0].InErrors; got != 0 {
 		t.Errorf("errors = %d, want 0 (5 errors over 10s truncates)", got)
 	}
-	if rows[0].Marked {
-		t.Error("interface 1 must not be marked")
-	}
 
 	// Interface 2 was never seen before, so it has no rates yet.
 	if rows[1].InOctets != nil || rows[1].InPkts != nil {
 		t.Error("a new interface must not report rates on its first poll")
-	}
-	if !rows[1].Marked {
-		t.Error("interface 2 carries the marked IP")
 	}
 }
 
@@ -250,8 +267,7 @@ func TestBuildRowsUsesVendorRates(t *testing.T) {
 func TestBuildRowsKeepsPreviousValuesWhilePending(t *testing.T) {
 	previous := int64(4242)
 	p := &Poller{
-		profile:   config.Profile{SecValueFactor: 1},
-		markIndex: -1,
+		profile: config.Profile{SecValueFactor: 1},
 		lastRows: map[int]Row{
 			1: {Index: 1, InOctets: &previous, InPkts: &previous},
 		},
@@ -338,7 +354,7 @@ func TestRememberSkipsPendingInterfaces(t *testing.T) {
 		done:   []bool{false, true},
 	}
 
-	p.remember(st, []Row{{Index: 1}, {Index: 2}})
+	p.remember(st, []Row{{Index: 1}, {Index: 2}}, time.Now())
 
 	if _, ok := p.prev[1]; ok {
 		t.Error("a pending interface must not become the next baseline")
@@ -356,15 +372,14 @@ func TestRememberSkipsPendingInterfaces(t *testing.T) {
 func TestVanishedInterfaceIsDroppedFromTheTable(t *testing.T) {
 	previous := int64(500)
 	p := &Poller{
-		profile:   config.Profile{SecValueFactor: 1},
-		markIndex: -1,
-		lastRows:  map[int]Row{2: {Index: 2, InOctets: &previous}},
+		profile:  config.Profile{SecValueFactor: 1},
+		lastRows: map[int]Row{2: {Index: 2, InOctets: &previous}},
 	}
 	st := &state{
 		ifaces: []iface{{index: 1, name: "xe-0/0/0"}, {index: 2, name: "xe-0/0/1"}},
 		raw: []counters{
 			{inOct: val(10), outOct: val(10), inPkt: val(1), outPkt: val(1), errIn: val(0)},
-			{}, // every varbind came back as noSuchInstance
+			{denied: true}, // every varbind came back as noSuchInstance
 		},
 		secs: 10,
 		done: []bool{true, true},
@@ -380,14 +395,28 @@ func TestVanishedInterfaceIsDroppedFromTheTable(t *testing.T) {
 	}
 }
 
+// An answer that simply left the varbinds out looks exactly like a removed
+// port from the outside, and an agent replying tooBig produces precisely that.
+// Deleting the whole batch over it would empty the table in chunks of twelve.
+func TestASilentAnswerIsNotAremovedInterface(t *testing.T) {
+	st := &state{
+		ifaces: []iface{{index: 1, name: "xe-0/0/0"}},
+		raw:    []counters{{}}, // answered, nothing assigned, no denial
+		done:   []bool{true},
+	}
+
+	if gone := vanished(st); len(gone) != 0 {
+		t.Errorf("vanished = %v, want nothing dropped without an explicit denial", gone)
+	}
+}
+
 // A timeout looks similar but must not remove anything: the port is probably
 // still there, the agent just did not answer in time.
 func TestTimeoutIsNotMistakenForARemovedInterface(t *testing.T) {
 	previous := int64(500)
 	p := &Poller{
-		profile:   config.Profile{SecValueFactor: 1},
-		markIndex: -1,
-		lastRows:  map[int]Row{1: {Index: 1, InOctets: &previous}},
+		profile:  config.Profile{SecValueFactor: 1},
+		lastRows: map[int]Row{1: {Index: 1, InOctets: &previous}},
 	}
 	st := &state{
 		ifaces: []iface{{index: 1, name: "xe-0/0/0"}},
@@ -425,7 +454,8 @@ func TestForgetRemovesFromTheInterfaceList(t *testing.T) {
 }
 
 func TestIntervalPrefersAgentClock(t *testing.T) {
-	p := &Poller{prevUptime: val(1000), lastPoll: time.Now().Add(-time.Minute), prev: map[int]counters{1: {}}}
+	p := &Poller{lastUptime: val(1000), baseUptime: val(1000),
+		lastPoll: time.Now().Add(-time.Minute), prev: map[int]counters{1: {}}}
 
 	// 1500 - 1000 TimeTicks is 5 seconds, not the wall clock's 60.
 	if got := p.interval(val(1500), time.Now()); got != 5 {
@@ -434,7 +464,7 @@ func TestIntervalPrefersAgentClock(t *testing.T) {
 }
 
 func TestIntervalDetectsReboot(t *testing.T) {
-	p := &Poller{prevUptime: val(50000), prev: map[int]counters{1: {inOct: val(9)}}}
+	p := &Poller{lastUptime: val(50000), baseUptime: val(50000), prev: map[int]counters{1: {inOct: val(9)}}}
 
 	if got := p.interval(val(10), time.Now()); got != 0 {
 		t.Errorf("interval = %v, want 0 after a reboot", got)
@@ -510,4 +540,196 @@ func mustCompile(t *testing.T, patterns ...string) []*regexp.Regexp {
 		out = append(out, regexp.MustCompile(p))
 	}
 	return out
+}
+
+// A lost scalar request costs a warning, not the poll: three OIDs must not
+// decide over six hundred interface counters. What it would have shown stands
+// in from the previous poll rather than blanking the header and collapsing the
+// readings block.
+func TestSnapshotFallsBackToTheLastGoodScalars(t *testing.T) {
+	p := &Poller{}
+	good := &state{sysName: "leaf16", cpu: "8 4", scalarsOK: true, cpuOK: true,
+		readings: []Reading{{Name: "Temperatur", Value: "31"}}}
+	p.remember(good, nil, time.Now())
+
+	lost := &state{warnings: []string{"system: request timeout"}}
+	snap := p.snapshot(lost, true, time.Now())
+
+	if snap.SysName != "leaf16" || snap.CPU != "8 4" {
+		t.Errorf("header = %q/%q, want the previous values", snap.SysName, snap.CPU)
+	}
+	if len(snap.Readings) != 1 {
+		t.Errorf("%d readings, want the previous one so the block keeps its height", len(snap.Readings))
+	}
+	if len(snap.Warnings) != 1 {
+		t.Errorf("warnings = %v, want the failure reported", snap.Warnings)
+	}
+}
+
+// An empty answer from a request that worked is the truth. Papering over it
+// would make a CPU OID that stopped answering look like one that still does.
+func TestSnapshotShowsAnEmptyAnswerAsEmpty(t *testing.T) {
+	p := &Poller{}
+	p.remember(&state{sysName: "leaf16", cpu: "8 4", scalarsOK: true, cpuOK: true}, nil, time.Now())
+
+	snap := p.snapshot(&state{scalarsOK: true, cpuOK: true}, true, time.Now())
+
+	if snap.SysName != "" || snap.CPU != "" {
+		t.Errorf("header = %q/%q, want both empty rather than frozen", snap.SysName, snap.CPU)
+	}
+}
+
+// The tick baseline has to survive a lost scalar request, or the restart it
+// would have caught is read as a counter wrap: a four-billion-packet spike.
+func TestRememberKeepsTheLastGoodUptime(t *testing.T) {
+	p := &Poller{}
+	p.remember(&state{uptime: val(100_000), scalarsOK: true}, nil, time.Now())
+
+	p.remember(&state{}, nil, time.Now()) // scalars lost
+
+	if !p.lastUptime.ok || p.lastUptime.n != 100_000 {
+		t.Errorf("lastUptime = %+v, want the last one that arrived", p.lastUptime)
+	}
+	if p.baseUptime.ok {
+		t.Error("baseUptime must be unset: the counters now come from a poll without an uptime")
+	}
+
+	// The restart is still caught against that older yardstick.
+	p.prev = map[int]counters{1: {inPkt: val(5000)}}
+	if secs := p.interval(val(300), time.Now()); secs != 0 {
+		t.Errorf("secs = %v, want 0 — the agent restarted", secs)
+	}
+	if len(p.prev) != 0 {
+		t.Error("counters from before the restart were kept")
+	}
+}
+
+// With no baseline the ticks would span two intervals while the counters span
+// one, halving every rate. The wall clock is the honest answer that round.
+func TestIntervalIgnoresAStaleBaseline(t *testing.T) {
+	p := &Poller{
+		lastUptime: val(100_000), // seen two polls ago
+		lastPoll:   time.Now().Add(-10 * time.Second),
+	}
+
+	// 20s of ticks, but only 10s since the counters it is compared against.
+	got := p.interval(val(102_000), time.Now())
+
+	if got < 9.5 || got > 10.5 {
+		t.Errorf("secs = %v, want about 10 from the wall clock, not 20 from the ticks", got)
+	}
+}
+
+// Recovery: once a poll brings an uptime again, the agent's clock takes over
+// from the wall clock. Without this the rates stay on the poller's clock for
+// good, which is a silent and permanent degradation.
+func TestBaselineRecoversAfterAGoodPoll(t *testing.T) {
+	p := &Poller{}
+	p.remember(&state{uptime: val(100_000), scalarsOK: true}, nil, time.Now())
+	p.remember(&state{}, nil, time.Now())                                      // lost
+	p.remember(&state{uptime: val(102_000), scalarsOK: true}, nil, time.Now()) // good again
+
+	// Deliberately a wall clock that would give a different answer.
+	p.lastPoll = time.Now().Add(-99 * time.Second)
+
+	if got := p.interval(val(103_000), time.Now()); got != 10 {
+		t.Errorf("secs = %v, want 10 from the ticks again", got)
+	}
+}
+
+// gosnmp leaves a non-zero error-status in the packet and reports no error of
+// its own. Reading such a response as valid-but-empty is what let a tooBig
+// wipe a batch of interfaces off the table.
+func TestResponseError(t *testing.T) {
+	if err := responseError(&gosnmp.SnmpPacket{Error: gosnmp.NoError}); err != nil {
+		t.Errorf("noError became %v", err)
+	}
+	if err := responseError(nil); err == nil {
+		t.Error("a missing packet must be an error")
+	}
+	for _, status := range []gosnmp.SNMPError{
+		gosnmp.TooBig, gosnmp.GenErr, gosnmp.ResourceUnavailable, gosnmp.AuthorizationError,
+	} {
+		err := responseError(&gosnmp.SnmpPacket{Error: status})
+		if err == nil {
+			t.Errorf("%v passed as a valid response", status)
+			continue
+		}
+		if !strings.Contains(err.Error(), status.String()) {
+			t.Errorf("error %q does not name the status %v", err, status)
+		}
+	}
+}
+
+func TestDeniedOnlyForAnExplicitDenial(t *testing.T) {
+	for _, typ := range []gosnmp.Asn1BER{gosnmp.NoSuchObject, gosnmp.NoSuchInstance} {
+		if !denied(gosnmp.SnmpPDU{Type: typ}) {
+			t.Errorf("%v is a denial", typ)
+		}
+	}
+	// endOfMibView and Null mean "no value here", not "no such interface".
+	for _, typ := range []gosnmp.Asn1BER{gosnmp.EndOfMibView, gosnmp.Null, gosnmp.Counter64} {
+		if denied(gosnmp.SnmpPDU{Type: typ}) {
+			t.Errorf("%v must not count as a denial", typ)
+		}
+	}
+}
+
+// A tick delta of zero measures nothing. It happens on an agent whose
+// sysUpTime is stuck or reports whole seconds coarsely; taking it as the
+// interval would print "-" in every cell rather than showing rates at all.
+func TestIntervalIgnoresAStandingClock(t *testing.T) {
+	p := &Poller{
+		lastUptime: val(100_000),
+		baseUptime: val(100_000),
+		lastPoll:   time.Now().Add(-4 * time.Second),
+		prev:       map[int]counters{1: {inOct: val(5)}},
+	}
+
+	got := p.interval(val(100_000), time.Now()) // same tick as last time
+
+	if got < 3.5 || got > 4.5 {
+		t.Errorf("secs = %v, want about 4 from the wall clock", got)
+	}
+	if len(p.prev) == 0 {
+		t.Error("an unchanged clock is not a restart; the counters must stay")
+	}
+}
+
+// The info block gives each warning one row, and against a mute agent the error
+// from parallel() carries one entry per request. Fifty timeouts have to read as
+// one fact on one line, or the display cuts everything after the first.
+func TestWarningIsOneLine(t *testing.T) {
+	joined := errors.Join(
+		errors.New("request timeout (after 1 retries)"),
+		errors.New("request timeout (after 1 retries)"),
+		errors.New("request timeout (after 1 retries)"),
+		errors.New("agent reported TooBig"),
+	)
+
+	got := Warning("counters", joined)
+
+	if strings.Contains(got, "\n") {
+		t.Fatalf("warning spans several lines: %q", got)
+	}
+	if !strings.HasPrefix(got, "counters: ") {
+		t.Errorf("%q does not say which request failed", got)
+	}
+	if !strings.Contains(got, "(x3)") {
+		t.Errorf("%q does not collapse the three identical timeouts", got)
+	}
+	if !strings.Contains(got, "TooBig") {
+		t.Errorf("%q lost the second, different failure", got)
+	}
+}
+
+// A yaml error brings its own newlines without being a joined error.
+func TestWarningFlattensASingleError(t *testing.T) {
+	got := Warning("system", errors.New("first line\n  second line"))
+	if strings.Contains(got, "\n") {
+		t.Errorf("warning spans several lines: %q", got)
+	}
+	if !strings.Contains(got, "second line") {
+		t.Errorf("%q lost the detail", got)
+	}
 }

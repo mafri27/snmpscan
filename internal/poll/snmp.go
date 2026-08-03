@@ -3,6 +3,7 @@ package poll
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
@@ -26,8 +27,6 @@ const (
 	oidIfInUcastPkts = "1.3.6.1.2.1.2.2.1.11"
 	oidIfOutUcastPkt = "1.3.6.1.2.1.2.2.1.12"
 	oidIfInErrors    = "1.3.6.1.2.1.2.2.1.14"
-
-	oidIPAdEntIfIndex = "1.3.6.1.2.1.4.20.1.2"
 )
 
 // Target describes how to reach a device. SNMPv3 will slot in here as
@@ -149,6 +148,26 @@ func pduString(p gosnmp.SnmpPDU) string {
 	default:
 		return fmt.Sprint(v)
 	}
+}
+
+// denied reports that the agent said it does not have this object, as opposed
+// to the many ways a value can simply be absent. That distinction is what tells
+// a removed interface from one whose answer went missing.
+func denied(p gosnmp.SnmpPDU) bool {
+	return p.Type == gosnmp.NoSuchObject || p.Type == gosnmp.NoSuchInstance
+}
+
+// responseError turns a non-zero SNMP error-status into an error. gosnmp leaves
+// it in the packet and reports no error of its own, so a tooBig from an agent
+// with a small buffer would otherwise pass for an empty but valid answer.
+func responseError(res *gosnmp.SnmpPacket) error {
+	if res == nil {
+		return errors.New("empty response")
+	}
+	if res.Error != gosnmp.NoError {
+		return fmt.Errorf("agent reported %s", res.Error)
+	}
+	return nil
 }
 
 func pduValue(p gosnmp.SnmpPDU) value {

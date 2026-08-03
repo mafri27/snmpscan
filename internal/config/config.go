@@ -32,16 +32,21 @@ type Set struct {
 }
 
 // Settings holds the values that used to be constants in the Ruby version.
-// The intervals are pointers because zero is a meaningful setting — it means
-// "no pause between runs" — and has to be told apart from an absent key.
+// The intervals are pointers so that a file leaving one out keeps whatever a
+// less specific file set, rather than overwriting it with a zero.
 type Settings struct {
-	// Interval is the seconds between value polls.
+	// Interval is the seconds between value polls, at least MinInterval.
 	Interval *int `yaml:"interval"`
-	// Discovery is the seconds between re-reads of the interface list.
-	// Unset means "same as Interval".
+	// Discovery is the seconds between re-reads of the interface list. Unset
+	// means "same as Interval", negative means once at startup.
 	Discovery  *int       `yaml:"discovery"`
 	Thresholds Thresholds `yaml:"thresholds"`
 }
+
+// MinInterval is the shortest poll interval that makes sense. Below a second
+// the poller spends the device's CPU rather than measuring it, and the agent's
+// own clock has no room to advance between two reads.
+const MinInterval = 1
 
 // DefaultSettings applies when no snmpscan.yml exists anywhere.
 func DefaultSettings() Settings {
@@ -109,15 +114,40 @@ func Load(dirs []string) (*Set, error) {
 	return set, nil
 }
 
-// strictUnmarshal rejects unknown keys so a typo in a profile is reported
-// instead of quietly disabling whatever it was meant to configure.
+// strictUnmarshal reads one document, rejecting unknown keys so a typo in a
+// profile is reported instead of quietly disabling whatever it was meant to
+// configure. A second document is an error rather than something to skip.
 func strictUnmarshal(data []byte, into any) error {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(into); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); err == nil {
+		return fmt.Errorf("line %d: only the first document is read here", extra.Line)
+	}
 	return nil
+}
+
+// decodeDevices reads every document in the file. Profiles conventionally start
+// with a `---`, which makes a second one easy to add — and losing it without a
+// word would be the worst of both worlds.
+func decodeDevices(data []byte) ([]*Device, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var all []*Device
+	for {
+		var devs []*Device
+		err := dec.Decode(&devs)
+		if errors.Is(err, io.EOF) {
+			return all, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, devs...)
+	}
 }
 
 func loadDevices(file string) ([]*Device, error) {
@@ -125,8 +155,8 @@ func loadDevices(file string) ([]*Device, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", file, err)
 	}
-	var devs []*Device
-	if err := strictUnmarshal(data, &devs); err != nil {
+	devs, err := decodeDevices(data)
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", file, err)
 	}
 	for _, dev := range devs {
@@ -153,6 +183,12 @@ func loadSettings(file string) (*Settings, error) {
 	var s Settings
 	if err := strictUnmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("%s: %w", file, err)
+	}
+	if s.Interval != nil && *s.Interval < MinInterval {
+		return nil, fmt.Errorf("%s: interval %d is below the minimum of %d", file, *s.Interval, MinInterval)
+	}
+	if s.Discovery != nil && *s.Discovery == 0 {
+		return nil, fmt.Errorf("%s: discovery 0: use a negative value to walk once at startup", file)
 	}
 	return &s, nil
 }
@@ -201,7 +237,7 @@ func (s *Set) Match(sysDescr string) Profile {
 		p.Matched = append(p.Matched, fmt.Sprintf("%s (%s)", dev.Name, filepath.Base(dev.source)))
 
 		if dev.CPUOID != "" {
-			p.CPUOID = strings.TrimSpace(dev.CPUOID)
+			p.CPUOID = NormalizeOID(dev.CPUOID)
 		}
 		if dev.SecValueFactor != 0 {
 			p.SecValueFactor = dev.SecValueFactor
@@ -222,9 +258,17 @@ func (s *Set) Match(sysDescr string) Profile {
 }
 
 func setOID(dst *string, v string) {
-	if v = strings.TrimSpace(v); v != "" {
+	if v = NormalizeOID(v); v != "" {
 		*dst = v
 	}
+}
+
+// NormalizeOID drops the leading dot that MIB browsers like to print. Values
+// are looked up against the dotless form the agent sends back, so ".1.3.6.1"
+// would never match — and it fails silently: the reading is simply absent and
+// a vendor rate column falls back to our own delta without saying so.
+func NormalizeOID(s string) string {
+	return strings.TrimPrefix(strings.TrimSpace(s), ".")
 }
 
 // parseInt mimics Ruby's String#to_i: leading digits count, anything else

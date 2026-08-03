@@ -53,14 +53,6 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-func TestMarkedWinsOverAlert(t *testing.T) {
-	r := row(mbitToBytes(900), 0, 0, 0, 0)
-	r.Marked = true
-	if got := classify(r, config.DefaultThresholds()); got != StyleMarked {
-		t.Errorf("classify = %v, want the mark to win", got)
-	}
-}
-
 func TestClassifyHonoursOverriddenThresholds(t *testing.T) {
 	th := config.DefaultThresholds()
 	high := int64(9000)

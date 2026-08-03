@@ -84,7 +84,22 @@ func (a *AddInfo) Evaluate(value string) (out string, isError bool, ok bool) {
 	return "", false, false
 }
 
-var addInfoKeys = map[string]bool{"oid": true, "name": true, "type": true, "relation": true}
+var (
+	addInfoKeys = map[string]bool{"oid": true, "name": true, "type": true, "relation": true}
+	caseKeys    = map[string]bool{"test": true, "output": true, "error": true}
+)
+
+// rejectUnknownKeys fails on a key that is not in allowed. Node.Decode ignores
+// what it does not know, so without this a typo disables the setting it was
+// meant to make and says nothing about it.
+func rejectUnknownKeys(n *yaml.Node, what string, allowed map[string]bool) error {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if !allowed[n.Content[i].Value] {
+			return fmt.Errorf("line %d: unknown %s key %q", n.Content[i].Line, what, n.Content[i].Value)
+		}
+	}
+	return nil
+}
 
 func (a *AddInfo) UnmarshalYAML(n *yaml.Node) error {
 	// relation is a list of cases for `same` but a bare number for max/min,
@@ -98,15 +113,11 @@ func (a *AddInfo) UnmarshalYAML(n *yaml.Node) error {
 	if err := n.Decode(&raw); err != nil {
 		return err
 	}
-	// Decode ignores unknown keys here, so a typo would silently disable a
-	// reading. Reject it instead.
-	for i := 0; i+1 < len(n.Content); i += 2 {
-		if !addInfoKeys[n.Content[i].Value] {
-			return fmt.Errorf("line %d: unknown add_info key %q", n.Content[i].Line, n.Content[i].Value)
-		}
+	if err := rejectUnknownKeys(n, "add_info", addInfoKeys); err != nil {
+		return err
 	}
 
-	a.OID = strings.TrimSpace(raw.OID)
+	a.OID = NormalizeOID(raw.OID)
 	a.Name = raw.Name
 	a.Kind = Kind(strings.ToLower(strings.TrimSpace(raw.Type)))
 
@@ -119,6 +130,11 @@ func (a *AddInfo) UnmarshalYAML(n *yaml.Node) error {
 
 	switch a.Kind {
 	case KindSame:
+		for _, item := range raw.Relation.Content {
+			if err := rejectUnknownKeys(item, "relation", caseKeys); err != nil {
+				return fmt.Errorf("add_info %q: %w", a.Name, err)
+			}
+		}
 		if err := raw.Relation.Decode(&a.Cases); err != nil {
 			return fmt.Errorf("add_info %q: relation: %w", a.Name, err)
 		}

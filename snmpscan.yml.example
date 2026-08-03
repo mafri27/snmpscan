@@ -2,7 +2,7 @@
 # Every value below is also the built-in default, so an absent file changes
 # nothing.
 
-# Seconds between value polls; -i overrides it. 0 polls back to back.
+# Seconds between value polls, at least 1; -i overrides it.
 interval: 10
 
 thresholds:
@@ -17,7 +17,7 @@ thresholds:
     errors: 1
 
 # Seconds between re-reads of the interface list, which runs alongside the
-# value polls on its own connections. Omit it to follow `interval`; 0 runs it
-# back to back. On a large device this is most of the SNMP traffic, so raise
-# it if you want to be gentle on the agent.
+# value polls on its own connections. Omit it to follow `interval`; a negative
+# value walks once at startup and then never again. On a large device this is
+# most of the SNMP traffic, so raise it to be gentle on the agent.
 # discovery: 300

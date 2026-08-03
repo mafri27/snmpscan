@@ -17,7 +17,6 @@ const (
 	StyleNormal Style = iota
 	StyleDim
 	StyleAlert
-	StyleMarked
 )
 
 // Mbit converts a byte rate to the figure shown in the table. Decimal, as
@@ -35,8 +34,6 @@ func Kpps(packetsPerSec int64) int64 { return packetsPerSec / 1000 }
 // of printing its escape codes in that order.
 func classify(r poll.Row, t config.Thresholds) Style {
 	switch {
-	case r.Marked:
-		return StyleMarked
 	case isAlert(r, t.Alert):
 		return StyleAlert
 	case isDim(r, t.Dim):

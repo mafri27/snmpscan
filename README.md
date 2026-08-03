@@ -131,9 +131,8 @@ and take some 4s — on a loaded device with many logical interfaces, minutes.
 
 It therefore publishes each interface the moment it is found rather than at
 the end of the walk, so polling starts on the first few ports while the rest
-are still being discovered. Interfaces the walk no longer sees are dropped
-when it completes; a walk that breaks off partway changes nothing, since it
-only saw a prefix of the table.
+are still being discovered. A walk that breaks off partway changes nothing,
+since it only saw a prefix of the table.
 
 **Polling** reads the counters of the interfaces already on the list. Each
 request carries whole interfaces only — never a row split across two packets —
@@ -154,13 +153,16 @@ the rest arrive. Interfaces the filter drops do not count, and once the walk has
 completed the normal interval applies again. An interval below two seconds is
 used as is.
 
-An interval of `0` means no pause: the next run starts as soon as the previous
-one finished. That applies to `-i` and `-discover` alike.
+The shortest interval is one second. Below that the poll spends the device's CPU
+rather than measuring it, and the agent's own clock has no room to advance
+between two reads — which is what the rates are calculated from.
 
-An interface removed between two discovery runs answers noSuchInstance on
-every counter, which is how it is told apart from one that merely timed out:
-the first is dropped from the table at once, the second keeps its previous
-values.
+An interface removed between two discovery runs answers noSuchObject or
+noSuchInstance on every counter, and that denial is what tells it apart from one
+that merely timed out or from a response that arrived without its varbinds: only
+an explicit denial drops a row, at once. A port the walk stopped listing needs
+two walks in a row to miss it, because an agent that cuts a walk short reports
+that as a clean end.
 
 `-maxrep` sets GETBULK max-repetitions. The default of 10 is the value the
 icinga checkgo plugins use across the fleet; raising it speeds up healthy

@@ -46,7 +46,7 @@ var columns = []struct {
 }
 
 // warmupDelay caps how often a newly discovered interface may pull the next
-// poll forward. An interval below it wins, so -i 0 stays pauseless.
+// poll forward. A shorter interval wins, so -i 1 keeps its own pace.
 const warmupDelay = 2 * time.Second
 
 // freshMark flags a row whose values arrived during the current poll; a blank
@@ -81,31 +81,41 @@ type UI struct {
 	interval  time.Duration
 	discovery time.Duration
 	refresh   chan struct{}
+	wg        sync.WaitGroup
+	// ready is closed once tview has a screen, which is when Stop starts
+	// having an effect.
+	ready     chan struct{}
+	readyOnce sync.Once
 
-	mu       sync.Mutex
-	snap     *poll.Snapshot
-	err      error
-	nextPoll time.Time
-	width    int
-	dirty    bool
-	sort     sortOrder
-	order    map[int]int
+	mu          sync.Mutex
+	snap        *poll.Snapshot
+	pollErr     error
+	discoverErr error
+	nextPoll    time.Time
+	width       int
+	dirty       bool
+	sort        sortOrder
+	order       map[int]int
 }
 
 // New builds the widget tree.
 func New(p *poll.Poller, host string, interval, discovery time.Duration) *UI {
 	u := &UI{
-		app:       tview.NewApplication(),
-		header:    tview.NewTextView().SetDynamicColors(true),
-		info:      tview.NewTextView().SetDynamicColors(true),
+		app: tview.NewApplication(),
+		// No wrapping anywhere: these blocks are sized by the number of lines
+		// they were given, so a long warning would silently claim a second row
+		// and push the table down.
+		header:    tview.NewTextView().SetDynamicColors(true).SetWrap(false),
+		info:      tview.NewTextView().SetDynamicColors(true).SetWrap(false),
 		table:     tview.NewTable(),
-		status:    tview.NewTextView().SetDynamicColors(true),
+		status:    tview.NewTextView().SetDynamicColors(true).SetWrap(false),
 		poller:    p,
 		host:      host,
 		interval:  interval,
 		discovery: discovery,
 		// Buffered so pressing r never blocks the input handler.
 		refresh: make(chan struct{}, 1),
+		ready:   make(chan struct{}),
 		sort:    defaultOrder(SortName),
 	}
 
@@ -130,6 +140,7 @@ func New(p *poll.Poller, host string, interval, discovery time.Duration) *UI {
 	// once there is a screen. Reformat on resize instead of waiting for the
 	// next poll.
 	u.app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		u.readyOnce.Do(func() { close(u.ready) })
 		w, _ := screen.Size()
 		u.mu.Lock()
 		changed := w != u.width
@@ -198,17 +209,38 @@ func (u *UI) setSort(key SortKey) {
 	u.drawTable()
 }
 
-// Run starts the poll loop and blocks until the user quits.
+// Run starts the poll loop and blocks until the user quits. It waits for the
+// loops that talk SNMP: the caller closes the sessions right afterwards, and a
+// poll still waiting on a response would have them pulled away underneath it.
 func (u *UI) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	u.drawHeader()
-	go u.pollLoop(ctx)
-	go u.discoverLoop(ctx)
+	u.wg.Add(2)
+	go func() {
+		defer u.wg.Done()
+		u.pollLoop(ctx)
+	}()
+	go func() {
+		defer u.wg.Done()
+		u.discoverLoop(ctx)
+	}()
 	go u.redrawLoop(ctx)
+	// A SIGTERM cancels the context, but tview draws on until told to stop.
+	// Waiting for the first draw matters: Stop is a no-op while there is no
+	// screen yet, so a signal arriving during startup would be swallowed and
+	// leave the table up with a frozen countdown and nothing polling it.
+	go func() {
+		<-ctx.Done()
+		<-u.ready
+		u.app.Stop()
+	}()
 
-	return u.app.SetRoot(u.body, true).Run()
+	err := u.app.SetRoot(u.body, true).Run()
+	cancel()
+	u.wg.Wait()
+	return err
 }
 
 func (u *UI) pollLoop(ctx context.Context) {
@@ -224,7 +256,7 @@ func (u *UI) pollLoop(ctx context.Context) {
 		if snap != nil {
 			u.snap = snap
 		}
-		u.err = err
+		u.pollErr = err
 		u.nextPoll = time.Now().Add(u.interval)
 		u.dirty = true
 		u.mu.Unlock()
@@ -271,13 +303,18 @@ func (u *UI) waitBefore(ctx context.Context, d time.Duration) bool {
 func (u *UI) discoverLoop(ctx context.Context) {
 	for {
 		// Runs straight away, and again once the interval has passed since it
-		// finished — an interval of zero means back to back. A walk that
-		// outlasts the interval simply starts the next one late.
-		if err := u.poller.Discover(ctx); err != nil && ctx.Err() == nil {
-			u.mu.Lock()
-			u.err = err
-			u.mu.Unlock()
+		// finished. A walk that outlasts the interval simply starts the next
+		// one late.
+		err := u.poller.Discover(ctx)
+		if ctx.Err() != nil {
+			return
 		}
+		u.mu.Lock()
+		// Cleared on success too: a discovery that recovered must not leave a
+		// stale complaint in the header for the rest of the run.
+		u.discoverErr = err
+		u.dirty = true
+		u.mu.Unlock()
 		// A negative interval means one pass only. It still has to happen, or
 		// there would be no interfaces to poll at all.
 		if u.discovery < 0 {
@@ -314,6 +351,9 @@ func (u *UI) redrawLoop(ctx context.Context) {
 			u.dirty = false
 			u.mu.Unlock()
 
+			// Blocks until the event loop has run this, and never returns once
+			// the screen is gone — which is why Run does not wait for this
+			// goroutine.
 			u.app.QueueUpdateDraw(func() {
 				u.drawHeader()
 				if dirty {
@@ -329,7 +369,7 @@ func (u *UI) redrawLoop(ctx context.Context) {
 
 func (u *UI) drawHeader() {
 	u.mu.Lock()
-	snap, err, next := u.snap, u.err, u.nextPoll
+	snap, next, err := u.snap, u.nextPoll, u.pollErr
 	u.mu.Unlock()
 
 	var b strings.Builder
@@ -347,7 +387,8 @@ func (u *UI) drawHeader() {
 
 	switch left := int(time.Until(next).Round(time.Second).Seconds()); {
 	case err != nil:
-		fmt.Fprintf(&b, "   [red]%s[-]", tview.Escape(err.Error()))
+		// One line, and a discovery failure carries one entry per walk.
+		fmt.Fprintf(&b, "   [red]%s[-]", tview.Escape(poll.Warning("error", err)))
 	case next.IsZero() || left <= 0:
 		b.WriteString("   [gray]polling…[-]")
 	default:
@@ -418,13 +459,18 @@ func (u *UI) visibleRange() string {
 
 func (u *UI) drawReadings() {
 	u.mu.Lock()
-	snap := u.snap
+	snap, discoverErr := u.snap, u.discoverErr
 	u.mu.Unlock()
 	if snap == nil {
 		return
 	}
 
-	lines := make([]string, 0, len(snap.Readings)+len(snap.Warnings))
+	lines := make([]string, 0, len(snap.Readings)+len(snap.Warnings)+1)
+	// A failed discovery belongs here rather than in the header: the values on
+	// screen are fine, it is the list of interfaces that may be out of date.
+	if discoverErr != nil {
+		lines = append(lines, "[yellow] "+tview.Escape(poll.Warning("discovery", discoverErr))+"[-]")
+	}
 	for _, r := range snap.Readings {
 		name := fmt.Sprintf(" %-28s %s", tview.Escape(r.Name), tview.Escape(r.Value))
 		if r.IsError {
@@ -600,8 +646,6 @@ func styleColor(s Style) tcell.Color {
 		return tcell.ColorGray
 	case StyleAlert:
 		return tcell.ColorRed
-	case StyleMarked:
-		return tcell.ColorYellow
 	default:
 		return tcell.ColorDefault
 	}

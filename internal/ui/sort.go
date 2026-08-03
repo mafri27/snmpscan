@@ -105,13 +105,10 @@ func directed(cmpFn func(a, b poll.Row) int, desc bool) func(a, b poll.Row) int 
 func stableCompare(key SortKey) func(a, b poll.Row) int {
 	if key == SortAlias {
 		return func(a, b poll.Row) int {
-			if c := strings.Compare(a.Alias, b.Alias); c != 0 {
-				return c
-			}
-			return natCompare(a.Name, b.Name)
+			return cmp.Or(strings.Compare(a.Alias, b.Alias), byName(a, b))
 		}
 	}
-	return func(a, b poll.Row) int { return natCompare(a.Name, b.Name) }
+	return byName
 }
 
 func unstableCompare(key SortKey) func(a, b poll.Row) int {
@@ -122,11 +119,16 @@ func unstableCompare(key SortKey) func(a, b poll.Row) int {
 		} else {
 			c = cmp.Compare(traffic(a), traffic(b))
 		}
-		if c != 0 {
-			return c
-		}
-		return natCompare(a.Name, b.Name)
+		return cmp.Or(c, byName(a, b))
 	}
+}
+
+// byName is every comparison's last word, and it ends on the ifIndex on
+// purpose: slices.SortFunc is not stable, and natCompare calls two different
+// names equal whenever only leading zeroes tell them apart — as it should for
+// ordering. Without a unique tiebreak those rows swap places on every redraw.
+func byName(a, b poll.Row) int {
+	return cmp.Or(natCompare(a.Name, b.Name), cmp.Compare(a.Index, b.Index))
 }
 
 func byRanking(order map[int]int) func(a, b poll.Row) int {

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -19,6 +19,11 @@ import (
 )
 
 const version = "2.0.0"
+
+// maxSessions is a sanity limit, not a tuned one: every session dials its own
+// UDP socket at startup, so an absurd -sessions would fail on the fd limit with
+// a connect error that says nothing about the cause.
+const maxSessions = 64
 
 // stringList collects a flag that may be repeated, like -r.
 type stringList []string
@@ -33,7 +38,6 @@ type options struct {
 	filters      stringList
 	interval     int
 	discovery    time.Duration
-	mark         bool
 	readings     bool
 	timeout      time.Duration
 	retries      int
@@ -59,9 +63,8 @@ func run() error {
 	fs.UintVar(&opts.port, "p", 161, "SNMP port of the target system")
 	fs.StringVar(&opts.community, "c", "", "SNMP community")
 	fs.Var(&opts.filters, "r", "only show interfaces matching this pattern (repeatable)")
-	fs.IntVar(&opts.interval, "i", -1, "seconds between polls; 0 polls back to back")
-	fs.DurationVar(&opts.discovery, "discover", -1, "how often to re-read the interface list; 0 runs it back to back")
-	fs.BoolVar(&opts.mark, "m", false, "highlight the interface holding the target's IP")
+	fs.IntVar(&opts.interval, "i", 0, "seconds between polls, at least 1")
+	fs.DurationVar(&opts.discovery, "discover", 0, "how often to re-read the interface list; negative runs it once at startup")
 	fs.BoolVar(&opts.readings, "a", false, "also show the additional system readings")
 	fs.DurationVar(&opts.timeout, "timeout", 2*time.Second, "SNMP request timeout")
 	fs.IntVar(&opts.retries, "retries", 2, "SNMP retries per request")
@@ -73,6 +76,11 @@ func run() error {
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
+	// Which flags the user actually gave. A sentinel default cannot tell "-i 0"
+	// from "no -i", and it made "-discover -1s" unreachable although the help
+	// documented it.
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
 
 	if opts.version {
 		fmt.Printf("snmpscan %s\n", version)
@@ -81,6 +89,23 @@ func run() error {
 	if opts.host == "" || opts.community == "" {
 		fs.Usage()
 		return fmt.Errorf("both -h and -c are required")
+	}
+	// These end up in narrower types further down, where a typo would be
+	// truncated: -p 65536 would come out as 0 and then quietly become 161.
+	if opts.port == 0 || opts.port > 65535 {
+		return fmt.Errorf("-p %d is not a port", opts.port)
+	}
+	if opts.maxRep > math.MaxUint32 {
+		return fmt.Errorf("-maxrep %d is out of range", opts.maxRep)
+	}
+	if opts.sessions < 1 || opts.sessions > maxSessions {
+		return fmt.Errorf("-sessions %d is outside 1..%d", opts.sessions, maxSessions)
+	}
+	if given["i"] && opts.interval < 1 {
+		return fmt.Errorf("-i %d: an interval of less than a second polls the device to death", opts.interval)
+	}
+	if given["discover"] && opts.discovery == 0 {
+		return fmt.Errorf("-discover 0: use a negative value to walk once at startup")
 	}
 
 	set, err := config.Load(config.SearchDirs())
@@ -94,18 +119,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if opts.interval >= 0 {
+	if given["i"] {
 		set.Settings.Interval = &opts.interval
-	}
-
-	markIP := ""
-	if opts.mark {
-		// ipAddrTable is indexed by address, so a hostname has to be resolved
-		// first — the Ruby version compared the raw argument and silently
-		// marked nothing whenever -h was not an IP.
-		if markIP, err = resolveIP(opts.host); err != nil {
-			return err
-		}
 	}
 
 	// Draw in the normal buffer instead of the alternate screen, so the last
@@ -129,7 +144,6 @@ func run() error {
 		},
 		Config:   set,
 		Filters:  opts.filters,
-		MarkIP:   markIP,
 		Readings: opts.readings,
 		Sessions: opts.sessions,
 		Warnings: warnings,
@@ -143,7 +157,7 @@ func run() error {
 	// Discovery keeps pace with the polls unless told otherwise; it runs
 	// alongside them on its own sessions.
 	discovery := config.Seconds(set.Settings.Discovery, int(interval.Seconds()))
-	if opts.discovery >= 0 {
+	if given["discover"] {
 		discovery = opts.discovery
 	}
 	err = ui.New(poller, opts.host, interval, discovery).Run(ctx)
@@ -173,22 +187,6 @@ func configWarnings(broken []error, ignore bool) ([]string, error) {
 	return warnings, nil
 }
 
-func resolveIP(host string) (string, error) {
-	if ip := net.ParseIP(host); ip != nil {
-		return host, nil
-	}
-	addrs, err := net.LookupHost(host)
-	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", host, err)
-	}
-	for _, a := range addrs {
-		if ip := net.ParseIP(a); ip != nil && ip.To4() != nil {
-			return a, nil
-		}
-	}
-	return "", fmt.Errorf("resolve %s: no IPv4 address", host)
-}
-
 func usage(fs *flag.FlagSet) func() {
 	return func() {
 		out := fs.Output()
@@ -201,17 +199,16 @@ func usage(fs *flag.FlagSet) func() {
   -c            SNMP community
   -p            SNMP port (default 161)
   -r            only show interfaces matching this pattern (repeatable)
-  -m            highlight the interface holding the target's IP
-  -i            seconds between polls (default 10); 0 polls back to back
+  -i            seconds between polls (default 10, at least 1)
   -discover     how often to re-read the interface list (defaults to -i);
-                runs alongside the polls, not as part of them. 0 runs it
-                back to back, a negative value switches it off
+                runs alongside the polls, not as part of them. A negative
+                value walks once at startup and then never again
   -a            also show the additional system readings
                 (temperature, alarms; off by default)
 
   -timeout      SNMP request timeout (default 2s)
   -retries      SNMP retries per request (default 2)
-  -sessions     parallel SNMP sessions (default 8)
+  -sessions     parallel SNMP sessions (default 8, at most 64)
   -maxrep       GETBULK max-repetitions (default 10, raise it for a
                 faster poll on healthy agents)
 

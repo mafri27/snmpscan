@@ -134,8 +134,10 @@ func TestSettingsMostSpecificWins(t *testing.T) {
 	}
 }
 
-// Zero is a real setting — poll without pausing — and must survive as one.
-func TestZeroIntervalIsKept(t *testing.T) {
+// A sub-second interval polls the device instead of measuring it, and the
+// agent's own clock cannot advance between two reads. It is refused rather
+// than silently raised.
+func TestIntervalBelowTheMinimumIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, SettingsFile, "interval: 0\n")
 
@@ -143,15 +145,47 @@ func TestZeroIntervalIsKept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if set.Settings.Interval == nil || *set.Settings.Interval != 0 {
-		t.Fatalf("interval = %v, want an explicit 0", set.Settings.Interval)
+	if len(set.Broken) != 1 {
+		t.Fatalf("broken = %v, want the interval reported", set.Broken)
 	}
-	if got := Seconds(set.Settings.Interval, 10); got != 0 {
-		t.Errorf("Seconds = %v, want 0 rather than the fallback", got)
+	// The default survives, so the run can still go ahead with -ignore-broken-configs.
+	if got := Seconds(set.Settings.Interval, 10); got != 10*time.Second {
+		t.Errorf("interval = %v, want the default to stand", got)
 	}
-	// An absent key still falls back.
-	if got := Seconds(set.Settings.Discovery, 42); got != 42*time.Second {
-		t.Errorf("unset discovery = %v, want the 42s fallback", got)
+}
+
+// discovery 0 used to mean "walk back to back"; that is gone, and the value
+// now points at what the user probably meant.
+func TestZeroDiscoveryIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, SettingsFile, "discovery: 0\n")
+
+	set, err := Load([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Broken) != 1 {
+		t.Fatalf("broken = %v, want discovery 0 reported", set.Broken)
+	}
+	if !strings.Contains(set.Broken[0].Error(), "negative") {
+		t.Errorf("%v does not point at the single-pass option", set.Broken[0])
+	}
+}
+
+// A negative discovery is a real setting: walk once at startup, never again.
+func TestNegativeDiscoveryIsKept(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, SettingsFile, "discovery: -1\n")
+
+	set, err := Load([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Broken) != 0 {
+		t.Fatalf("broken: %v", set.Broken)
+	}
+	if got := Seconds(set.Settings.Discovery, 10); got != -time.Second {
+		t.Errorf("discovery = %v, want it kept negative", got)
 	}
 }
 
@@ -252,5 +286,97 @@ func write(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Profiles conventionally open with a `---`, so a second document is an easy
+// thing to add — and it used to disappear without a word.
+func TestEveryDocumentInADeviceFileIsRead(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.device", "---\n- name: AAA\n  prio: 1\n---\n- name: BBB\n  prio: 2\n")
+
+	set, err := Load([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Broken) != 0 {
+		t.Fatalf("broken: %v", set.Broken)
+	}
+	if len(set.Devices) != 2 {
+		t.Fatalf("%d devices, want both documents", len(set.Devices))
+	}
+}
+
+// snmpscan.yml is a single document; a second one would be applied to nothing.
+func TestASecondSettingsDocumentIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, SettingsFile, "interval: 5\n---\ninterval: 9\n")
+
+	set, err := Load([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Broken) != 1 {
+		t.Fatalf("broken = %v, want the second document reported", set.Broken)
+	}
+}
+
+// A typo one level down used to be swallowed: the reading appeared with an
+// empty value and nothing said why.
+func TestUnknownKeyInARelationCaseIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.device", `
+- name: ".*"
+  add_infos:
+  - oid: 1.2.3.0
+    name: Powersupply
+    type: same
+    relation:
+    - test: "1"
+      outpu: working
+`)
+	set, err := Load([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Broken) != 1 {
+		t.Fatalf("broken = %v, want the typo reported", set.Broken)
+	}
+	if !strings.Contains(set.Broken[0].Error(), "outpu") {
+		t.Errorf("error does not name the key: %v", set.Broken[0])
+	}
+}
+
+// A leading dot is what MIB browsers print, but lookups run against the dotless
+// form the agent returns — so it matched nothing, silently.
+func TestOIDsAreNormalised(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.device", `
+- name: ".*"
+  cpu_oid: .1.3.6.1.4.1.9.1
+  in_sec_oct_oid: " .1.3.6.1.4.1.2636.3.3.1.1.7 "
+  add_infos:
+  - oid: .1.2.3.0
+    name: Temperatur
+    type: max
+    relation: 40
+`)
+	set, err := Load([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Broken) != 0 {
+		t.Fatalf("broken: %v", set.Broken)
+	}
+
+	p := set.Match("anything")
+	for what, got := range map[string]string{
+		"cpu_oid":        p.CPUOID,
+		"in_sec_oct_oid": p.InSecOctOID,
+		"add_info oid":   p.AddInfos[0].OID,
+	} {
+		if strings.HasPrefix(got, ".") || strings.TrimSpace(got) != got {
+			t.Errorf("%s = %q, want it dotless and trimmed", what, got)
+		}
 	}
 }
