@@ -85,6 +85,13 @@ For `type: same` the first matching case wins:
       error: false
 ```
 
+A file that does not parse stops the run, naming the file and the line — a
+profile that fell out silently would cost the CPU reading or the filter without
+anything on screen saying so. `-ignore-broken-configs` starts anyway and lists
+the skipped files as warnings above the table. That is the way past an old Ruby
+era `.device` left in `/etc/snmpscan`, whose `:name:` style keys this version
+does not read.
+
 `snmpscan.yml` holds the global settings. Without it the built-in defaults
 apply, so it is optional. See `snmpscan.yml.example`.
 

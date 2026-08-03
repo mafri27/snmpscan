@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -154,11 +155,26 @@ func TestZeroIntervalIsKept(t *testing.T) {
 	}
 }
 
+// A typo must not quietly disable whatever it was meant to configure. Load
+// reports it rather than returning an error, so one bad file cannot hide the
+// good ones — deciding what that means is the caller's job.
 func TestUnknownKeyIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "a.device", "- name: \".*\"\n  cpu_iod: 1.2.3\n")
-	if _, err := Load([]string{dir}); err == nil {
-		t.Fatal("a misspelled key was accepted")
+	write(t, dir, "b.device", "- name: \"Acme\"\n  cpu_oid: 1.2.3\n")
+
+	set, err := Load([]string{dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(set.Broken) != 1 {
+		t.Fatalf("%d files reported broken, want the one with the typo", len(set.Broken))
+	}
+	if !strings.Contains(set.Broken[0].Error(), "a.device") {
+		t.Errorf("error does not name the file: %v", set.Broken[0])
+	}
+	if len(set.Devices) != 1 {
+		t.Errorf("%d devices loaded, want the intact file to survive", len(set.Devices))
 	}
 }
 

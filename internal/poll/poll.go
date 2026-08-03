@@ -71,6 +71,9 @@ type Options struct {
 	Readings bool
 	// Sessions is the number of parallel SNMP conversations.
 	Sessions int
+	// Warnings are shown above the poll's own, for trouble found before any
+	// polling started — a config file that would not parse, say.
+	Warnings []string
 }
 
 // Poller keeps the SNMP sessions and the previous counter readings needed to
@@ -84,6 +87,7 @@ type Poller struct {
 	sysDescr  string
 	markIndex int
 	batchSize int
+	warnings  []string
 
 	sent       atomic.Int64
 	prev       map[int]counters
@@ -129,7 +133,7 @@ func New(ctx context.Context, opts Options) (*Poller, error) {
 	}
 
 	p := &Poller{opts: opts, markIndex: -1, prev: map[int]counters{}, batchSize: gosnmp.MaxOids,
-		added: make(chan struct{}, 1)}
+		added: make(chan struct{}, 1), warnings: opts.Warnings}
 
 	pl, err := newPool(opts.Target, opts.Sessions, &p.sent)
 	if err != nil {
@@ -537,7 +541,7 @@ func (p *Poller) snapshot(st *state, complete bool, start time.Time) *Snapshot {
 		SysName:  st.sysName,
 		CPU:      st.cpu,
 		Readings: slices.Clone(st.readings),
-		Warnings: slices.Clone(st.warnings),
+		Warnings: append(slices.Clone(p.warnings), st.warnings...),
 		Rows:     p.buildRows(st),
 		Requests: int(p.sent.Load()),
 		Elapsed:  time.Since(start),

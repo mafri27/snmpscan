@@ -25,6 +25,10 @@ const SettingsFile = "snmpscan.yml"
 type Set struct {
 	Devices  []*Device
 	Settings Settings
+	// Broken holds one error per file that would not parse. Load collects
+	// them rather than stopping at the first, so the caller can decide
+	// whether a stale profile is worth refusing to start over.
+	Broken []error
 }
 
 // Settings holds the values that used to be constants in the Ruby version.
@@ -66,7 +70,8 @@ func SearchDirs() []string {
 }
 
 // Load reads every *.device file plus the most specific snmpscan.yml found in
-// dirs. Missing directories are not an error; unreadable ones are.
+// dirs. Missing directories are not an error; unreadable ones are. A file that
+// does not parse lands in Set.Broken and is skipped — see there.
 func Load(dirs []string) (*Set, error) {
 	set := &Set{Settings: DefaultSettings()}
 
@@ -78,14 +83,16 @@ func Load(dirs []string) (*Set, error) {
 		for _, file := range files {
 			devs, err := loadDevices(file)
 			if err != nil {
-				return nil, err
+				set.Broken = append(set.Broken, err)
+				continue
 			}
 			set.Devices = append(set.Devices, devs...)
 		}
 
 		settings, err := loadSettings(filepath.Join(dir, SettingsFile))
 		if err != nil {
-			return nil, err
+			set.Broken = append(set.Broken, err)
+			continue
 		}
 		if settings != nil {
 			if settings.Interval != nil {

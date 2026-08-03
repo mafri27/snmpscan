@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -26,19 +27,20 @@ func (s *stringList) String() string     { return strings.Join(*s, ",") }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 type options struct {
-	host      string
-	port      uint
-	community string
-	filters   stringList
-	interval  int
-	discovery time.Duration
-	mark      bool
-	readings  bool
-	timeout   time.Duration
-	retries   int
-	sessions  int
-	maxRep    uint
-	version   bool
+	host         string
+	port         uint
+	community    string
+	filters      stringList
+	interval     int
+	discovery    time.Duration
+	mark         bool
+	readings     bool
+	timeout      time.Duration
+	retries      int
+	sessions     int
+	maxRep       uint
+	ignoreBroken bool
+	version      bool
 }
 
 func main() {
@@ -65,6 +67,7 @@ func run() error {
 	fs.IntVar(&opts.retries, "retries", 2, "SNMP retries per request")
 	fs.IntVar(&opts.sessions, "sessions", 8, "parallel SNMP sessions")
 	fs.UintVar(&opts.maxRep, "maxrep", 0, "GETBULK max-repetitions; raise it for a faster poll on healthy agents")
+	fs.BoolVar(&opts.ignoreBroken, "ignore-broken-configs", false, "start anyway when a config file does not parse, listing it as a warning")
 	fs.BoolVar(&opts.version, "version", false, "print version and exit")
 	fs.BoolVar(&opts.version, "v", false, "print version and exit")
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -81,6 +84,13 @@ func run() error {
 	}
 
 	set, err := config.Load(config.SearchDirs())
+	if err != nil {
+		return err
+	}
+	// A profile that does not parse is not silently half-applied: the run
+	// stops unless the operator says otherwise, because a missing CPU OID or
+	// filter is not obvious from the screen.
+	warnings, err := configWarnings(set.Broken, opts.ignoreBroken)
 	if err != nil {
 		return err
 	}
@@ -122,6 +132,7 @@ func run() error {
 		MarkIP:   markIP,
 		Readings: opts.readings,
 		Sessions: opts.sessions,
+		Warnings: warnings,
 	})
 	if err != nil {
 		return err
@@ -139,6 +150,27 @@ func run() error {
 	// The table stays on screen, so give the shell prompt its own line.
 	fmt.Println()
 	return err
+}
+
+// configWarnings decides what a file that would not parse means. Refusing to
+// start is the default: a profile that fell out silently costs the CPU reading
+// or the filter, and nothing on screen would say so. With -ignore-broken-configs
+// the run goes ahead, but the files stay visible as warnings rather than being
+// dropped without a word.
+func configWarnings(broken []error, ignore bool) ([]string, error) {
+	if len(broken) == 0 {
+		return nil, nil
+	}
+	if !ignore {
+		return nil, fmt.Errorf("%w\nuse -ignore-broken-configs to start without them", errors.Join(broken...))
+	}
+	warnings := make([]string, 0, len(broken))
+	for _, err := range broken {
+		// One warning is one line: the info block sizes itself by the number
+		// of entries, so a yaml error's own line breaks would be cut off.
+		warnings = append(warnings, "ignored config: "+strings.Join(strings.Fields(err.Error()), " "))
+	}
+	return warnings, nil
 }
 
 func resolveIP(host string) (string, error) {
@@ -182,6 +214,10 @@ func usage(fs *flag.FlagSet) func() {
   -sessions     parallel SNMP sessions (default 8)
   -maxrep       GETBULK max-repetitions (default 10, raise it for a
                 faster poll on healthy agents)
+
+  -ignore-broken-configs
+                start even when a config file does not parse; the files
+                are listed as warnings instead of stopping the run
 
   -help         display this help and exit
   -version      output version information and exit

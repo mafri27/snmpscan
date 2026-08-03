@@ -63,10 +63,6 @@ func (t Target) dial(sent *atomic.Int64) (*gosnmp.GoSNMP, error) {
 		// A GETBULK returns many rows per round trip instead of the single row
 		// a GETNEXT gives — this is what replaces the per-interface round trip.
 		MaxRepetitions: cmp.Or(t.MaxRepetitions, defaultMaxRepetitions),
-		// Disable the strictly-increasing-OID check (net-snmp's -Cc). Juniper
-		// PTX returns GETBULK varbinds out of order, which otherwise aborts
-		// the walk before a single value is read.
-		AppOpts: map[string]any{"c": true},
 	}
 	if ip := net.ParseIP(t.Host); ip != nil && ip.To4() == nil {
 		c.Transport = "udp6"
