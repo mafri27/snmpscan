@@ -477,11 +477,10 @@ func (u *UI) drawReadings() {
 	}
 
 	lines := make([]string, 0, len(snap.Readings)+len(snap.Warnings)+2)
-	// Which profiles the sysDescr matched. Only with -a, because that is when
-	// someone is looking at a profile's readings and wants to know which file
-	// produced them — an entry whose name pattern does not match is otherwise
-	// indistinguishable from one that has nothing to say.
-	if matched := u.poller.Profile().Matched; len(matched) > 0 {
+	// Which profiles the sysDescr matched — only with -a, because that is when
+	// someone is looking at a profile and wants to know which file produced it.
+	// Without the flag the row would cost the table a line for nothing.
+	if matched := u.poller.Profile().Matched; u.poller.ShowReadings() && len(matched) > 0 {
 		lines = append(lines, fmt.Sprintf("[gray] %-28s %s[-]", "Profile", tview.Escape(strings.Join(matched, ", "))))
 	}
 	// A failed discovery belongs here rather than in the header: the values on

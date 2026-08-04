@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -290,6 +291,14 @@ func parseInt(s string) (int64, bool) {
 	var n int64
 	digits := 0
 	for ; digits < len(s) && s[digits] >= '0' && s[digits] <= '9'; digits++ {
+		// Saturate rather than wrap, the same way the sort's scanner does: a
+		// wrapped value could land below a max limit and read as healthy.
+		if n > (math.MaxInt64-int64(s[digits]-'0'))/10 {
+			n = math.MaxInt64
+			for ; digits < len(s) && s[digits] >= '0' && s[digits] <= '9'; digits++ {
+			}
+			break
+		}
 		n = n*10 + int64(s[digits]-'0')
 	}
 	if neg {

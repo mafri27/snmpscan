@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -281,6 +282,11 @@ func TestParseInt(t *testing.T) {
 		if got != want || !numeric {
 			t.Errorf("parseInt(%q) = %d, %v, want %d, true", in, got, numeric, want)
 		}
+	}
+	// Overflow saturates instead of wrapping: a wrapped value could land below a
+	// max limit and read as a healthy reading.
+	if got, numeric := parseInt("99999999999999999999999"); !numeric || got != math.MaxInt64 {
+		t.Errorf("parseInt(overflow) = %d, %v, want MaxInt64, true", got, numeric)
 	}
 	// No digits at all is not the number zero.
 	for _, in := range []string{"noSuchObject", "noSuchInstance", "", "NO", "-"} {

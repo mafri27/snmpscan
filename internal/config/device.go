@@ -62,7 +62,8 @@ type Case struct {
 func (c *Case) Matches(value string) bool {
 	if c.pattern == nil {
 		// Only UnmarshalYAML compiles the pattern, so a Case built any other
-		// way has none. Falling back to the literal beats a panic that would
+		// way has none. Then just the catch-all matches — guessing at regex
+		// semantics without a regex would be worse, and a panic here would
 		// leave the terminal in full-screen mode.
 		return c.Test == ""
 	}

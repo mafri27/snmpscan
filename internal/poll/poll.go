@@ -37,8 +37,10 @@ type Row struct {
 	Fresh bool
 }
 
-// empty reports that this poll produced no figure at all for the row.
-func (r Row) empty() bool {
+// noFigures reports that this poll produced nothing to show for the row. Named
+// apart from counters.empty on purpose: that one looks at raw varbinds, this one
+// at the rates computed from them.
+func (r Row) noFigures() bool {
 	return r.InOctets == nil && r.OutOctets == nil &&
 		r.InPkts == nil && r.OutPkts == nil && r.InErrors == nil
 }
@@ -85,6 +87,7 @@ type Poller struct {
 	sysDescr  string
 	batchSize int
 	warnings  []string
+	readings  bool
 
 	sent         atomic.Int64
 	prev         map[int]counters
@@ -121,7 +124,7 @@ type iface struct {
 	index  int
 	name   string
 	alias  string
-	missed int // unconfirmed walks in a row; see missedWalksBeforeDrop
+	missed int // times unconfirmed, by a walk or a poll; see strikesBeforeDrop
 }
 
 // DefaultSessions is how many parallel conversations a poll is spread over.
@@ -129,14 +132,14 @@ type iface struct {
 // 4 need 7.5s. Beyond that the agent, not the client, is the bottleneck.
 const DefaultSessions = 8
 
-// missedWalksBeforeDrop is how often an interface has to go unconfirmed before
-// it leaves the list. One is not enough: gosnmp reports a walk the agent cut
-// short as a clean end — it logs the error-status and returns nil — so a
-// truncated walk is indistinguishable from a table that really shrank, and
-// taking it at face value would delete hundreds of ports.
-const missedWalksBeforeDrop = 2
+// strikesBeforeDrop is how often an interface has to go unconfirmed before it
+// leaves the list — by a walk that did not list it or a poll that found it
+// denied. One is not enough: gosnmp reports a walk the agent cut short as a
+// clean end, so a truncated walk is indistinguishable from a table that really
+// shrank, and taking it at face value would delete hundreds of ports.
+const strikesBeforeDrop = 2
 
-func (i iface) outOfStrikes() bool { return i.missed+1 >= missedWalksBeforeDrop }
+func (i iface) outOfStrikes() bool { return i.missed+1 >= strikesBeforeDrop }
 
 // New opens the sessions, reads sysDescr and resolves the matching profile.
 func New(ctx context.Context, opts Options) (*Poller, error) {
@@ -188,6 +191,7 @@ func New(ctx context.Context, opts Options) (*Poller, error) {
 	}
 
 	p.profile = opts.Config.Match(p.sysDescr)
+	p.readings = opts.Readings
 	if !opts.Readings {
 		p.profile.AddInfos = nil
 	}
@@ -214,6 +218,10 @@ func New(ctx context.Context, opts Options) (*Poller, error) {
 func (p *Poller) SysDescr() string { return p.sysDescr }
 
 func (p *Poller) Profile() config.Profile { return p.profile }
+
+// ShowReadings reports whether -a was given. The matched profiles are only worth
+// a line when someone is looking at a profile's readings anyway.
+func (p *Poller) ShowReadings() bool { return p.readings }
 
 // Close releases the sessions. New calls it on a half-built Poller when a dial
 // fails, so both pools may still be nil.
@@ -382,8 +390,8 @@ func (p *Poller) signalAdded() {
 // retain reconciles the list with what a completed discovery saw: ports that
 // are gone from the table, and ports whose name or alias no longer matches the
 // filter. An interface the walk did not list gets a strike rather than being
-// dropped straight away — see missedWalksBeforeDrop. A port the agent denies
-// outright still goes at once, through forget.
+// dropped straight away — see strikesBeforeDrop — and one the walk did see
+// has its strikes cleared, including any that forget handed out.
 func (p *Poller) retain(kept map[int]bool) {
 	p.ifmu.Lock()
 	defer p.ifmu.Unlock()
@@ -405,6 +413,10 @@ func (p *Poller) retain(kept map[int]bool) {
 // than a deletion: a port with no counters at all keeps turning up in ifName, so
 // dropping it every poll only for discovery to put it back makes the row blink.
 // The row is already off the table either way; this decides when polling stops.
+//
+// A port that stays listed therefore keeps being polled — retain clears its
+// strike every walk. That costs a handful of varbinds for a row nobody sees, and
+// buys that a port which starts answering again comes back on its own.
 func (p *Poller) forget(gone map[int]bool) {
 	if len(gone) == 0 {
 		return
@@ -497,6 +509,9 @@ func (p *Poller) Poll(ctx context.Context, onUpdate func(*Snapshot)) (*Snapshot,
 	st.ifaces = p.takeInterfaces()
 	st.raw = make([]counters, len(st.ifaces))
 	st.done = make([]bool, len(st.ifaces))
+	if p.restarted(st.uptime) {
+		p.dropHistory()
+	}
 	st.secs = p.interval(st.uptime, start)
 
 	// The names are already known, so the full list can be on screen while
@@ -740,18 +755,34 @@ func batchInterfaces(count, cols, maxOids int) []group {
 	return groups
 }
 
+// restarted reports that the agent's clock went backwards since the newest
+// uptime seen, which nothing but a restart does.
+func (p *Poller) restarted(uptime value) bool {
+	return uptime.ok && p.lastUptime.ok && uptime.n < p.lastUptime.n
+}
+
+// dropHistory forgets everything that describes the device as it was before a
+// restart. All of it, not just the counters: a rate computed across the reboot
+// would be an invented spike, and the rows, readings and CPU figure carried
+// over from before it would be shown as though they were current.
+func (p *Poller) dropHistory() {
+	p.prev = map[int]counters{}
+	p.lastRows = nil
+	p.lastReadings = nil
+	p.lastCPU = ""
+	p.lastSysName = ""
+}
+
 // interval prefers the agent's own clock, which is immune to the poller being
-// late. A sysUpTime that went backwards means the agent restarted, so the
-// previous counters are dropped rather than turned into a spike.
+// late. A restart yields 0, so no rate is computed across it.
 //
-// The restart check runs against the newest uptime seen, the duration only
-// against the poll that prev came from: with the uptime of a poll in between
-// missing, the ticks would cover two intervals where the counters cover one,
-// halving every rate. The wall clock is the honest answer in that round.
+// The duration is measured against the poll that prev came from, not the newest
+// uptime: with the uptime of a poll in between missing, the ticks would cover
+// two intervals where the counters cover one, halving every rate. The wall clock
+// is the honest answer in that round.
 func (p *Poller) interval(uptime value, now time.Time) float64 {
 	if uptime.ok && p.lastUptime.ok {
 		if uptime.n < p.lastUptime.n {
-			p.prev = map[int]counters{}
 			return 0
 		}
 		// Only a clock that actually moved on can measure anything. Equal ticks
@@ -814,7 +845,7 @@ func (p *Poller) buildRows(st *state) []Row {
 		// varbinds, or a port seen for the first time. Carry the previous poll's
 		// numbers rather than blanking the row, and leave Fresh unset to say
 		// they are old.
-		if row.empty() {
+		if row.noFigures() {
 			if old, ok := p.lastRows[ifc.index]; ok {
 				row.InOctets, row.OutOctets = old.InOctets, old.OutOctets
 				row.InPkts, row.OutPkts = old.InPkts, old.OutPkts

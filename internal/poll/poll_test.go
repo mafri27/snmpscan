@@ -188,6 +188,16 @@ func TestPollingClearsTheWakeUpForWhatItReads(t *testing.T) {
 	}
 }
 
+// measure mirrors what Poll does before it reads any counter: decide whether the
+// agent restarted, drop the history if so, then measure the interval. Tests go
+// through this so the order cannot drift away from the real one.
+func measure(p *Poller, uptime value, now time.Time) float64 {
+	if p.restarted(uptime) {
+		p.dropHistory()
+	}
+	return p.interval(uptime, now)
+}
+
 func signalled(p *Poller) bool {
 	select {
 	case <-p.Added():
@@ -473,9 +483,13 @@ func TestVendorOnlyCountersAreNotEmpty(t *testing.T) {
 	p := &Poller{profile: config.Profile{SecValueFactor: 8}}
 	st := &state{
 		ifaces: []iface{{index: 1, name: "et-0/0/0"}},
-		raw:    []counters{{secInOct: val(8000), secOutOct: val(16000)}},
-		secs:   10,
-		done:   []bool{true},
+		// denied as well: the standard counters really are absent here, so this
+		// only stays on the table if empty() counts the vendor values. Without
+		// the denial gone() is already false on its first term and the test
+		// would pass no matter what empty() does.
+		raw:  []counters{{secInOct: val(8000), secOutOct: val(16000), denied: true}},
+		secs: 10,
+		done: []bool{true},
 	}
 
 	rows := p.buildRows(st)
@@ -569,11 +583,47 @@ func TestIntervalPrefersAgentClock(t *testing.T) {
 func TestIntervalDetectsReboot(t *testing.T) {
 	p := &Poller{lastUptime: val(50000), baseUptime: val(50000), prev: map[int]counters{1: {inOct: val(9)}}}
 
-	if got := p.interval(val(10), time.Now()); got != 0 {
-		t.Errorf("interval = %v, want 0 after a reboot", got)
+	if !p.restarted(val(10)) {
+		t.Error("a clock that went backwards is a restart")
+	}
+	if got := measure(p, val(10), time.Now()); got != 0 {
+		t.Errorf("interval = %v, want 0 across a reboot", got)
 	}
 	if len(p.prev) != 0 {
 		t.Error("counters from before the reboot must be dropped")
+	}
+}
+
+// Everything the poller remembers describes the device as it was before the
+// restart, so all of it has to go — a rate across the reboot would be invented,
+// and a CPU figure or reading carried over would be shown as current. lastCPU in
+// particular hangs on its own request, which can fail while the uptime arrives.
+func TestARestartDropsEverythingRemembered(t *testing.T) {
+	rate := int64(42)
+	p := &Poller{
+		lastUptime:   val(500_000),
+		baseUptime:   val(500_000),
+		prev:         map[int]counters{1: {inOct: val(100)}},
+		lastRows:     map[int]Row{1: {Index: 1, InOctets: &rate}},
+		lastReadings: []Reading{{Name: "Temperatur", Value: "31"}},
+		lastCPU:      "41 2",
+		lastSysName:  "leaf16",
+	}
+
+	measure(p, val(300), time.Now())
+
+	if len(p.prev) != 0 || p.lastRows != nil || p.lastReadings != nil {
+		t.Errorf("counters/rows/readings survived: %v %v %v", p.prev, p.lastRows, p.lastReadings)
+	}
+	if p.lastCPU != "" || p.lastSysName != "" {
+		t.Errorf("cpu %q and sysname %q survived", p.lastCPU, p.lastSysName)
+	}
+
+	// And the fallback in snapshot no longer has anything stale to hand out.
+	snap := p.snapshot(&state{}, true, time.Now())
+	if snap.CPU != "" || snap.SysName != "" || len(snap.Readings) != 0 {
+		t.Errorf("snapshot still shows pre-restart values: cpu %q sysname %q readings %v",
+			snap.CPU, snap.SysName, snap.Readings)
 	}
 }
 
@@ -699,7 +749,7 @@ func TestRememberKeepsTheLastGoodUptime(t *testing.T) {
 
 	// The restart is still caught against that older yardstick.
 	p.prev = map[int]counters{1: {inPkt: val(5000)}}
-	if secs := p.interval(val(300), time.Now()); secs != 0 {
+	if secs := measure(p, val(300), time.Now()); secs != 0 {
 		t.Errorf("secs = %v, want 0 — the agent restarted", secs)
 	}
 	if len(p.prev) != 0 {
@@ -859,5 +909,61 @@ func TestWarningFlattensNestedJoinsButKeepsContext(t *testing.T) {
 	wrapped := fmt.Errorf("legacy.device: %w", errors.New("field :name not found"))
 	if got := Warning("ignored config", wrapped); !strings.Contains(got, "legacy.device: field :name not found") {
 		t.Errorf("%q lost the file name", got)
+	}
+}
+
+// A restart invalidates everything remembered about the device. Dropping only
+// the counters left buildRows carrying the pre-restart rates over: stale-marked,
+// but looking like measurements of the machine that just came up.
+func TestARestartDropsTheOldRowsToo(t *testing.T) {
+	before := int64(9999)
+	p := &Poller{
+		profile:    config.Profile{SecValueFactor: 1},
+		lastUptime: val(500_000),
+		baseUptime: val(500_000),
+		prev:       map[int]counters{1: {inOct: val(100)}},
+		lastRows:   map[int]Row{1: {Index: 1, InOctets: &before}},
+	}
+	st := &state{
+		ifaces: []iface{{index: 1, name: "xe-0/0/0"}},
+		raw:    []counters{{inOct: val(5)}}, // counters restarted low
+		done:   []bool{true},
+	}
+
+	st.secs = measure(p, val(300), time.Now()) // uptime went backwards
+
+	if st.secs != 0 {
+		t.Errorf("secs = %v, want 0 after a restart", st.secs)
+	}
+	rows := p.buildRows(st)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows, want the interface kept", len(rows))
+	}
+	if rows[0].InOctets != nil {
+		t.Errorf("in = %v, want no figure at all — that value predates the restart",
+			deref(rows[0].InOctets))
+	}
+	if rows[0].Fresh {
+		t.Error("nothing was measured this round")
+	}
+}
+
+// noFigures decides whether a row falls back to the previous poll, so every
+// field it looks at matters. An error count alone is a figure too.
+func TestNoFiguresCountsEveryColumn(t *testing.T) {
+	n := int64(0)
+	if !(Row{}).noFigures() {
+		t.Error("a row without any value must report no figures")
+	}
+	for name, r := range map[string]Row{
+		"in":      {InOctets: &n},
+		"out":     {OutOctets: &n},
+		"in pps":  {InPkts: &n},
+		"out pps": {OutPkts: &n},
+		"errors":  {InErrors: &n},
+	} {
+		if r.noFigures() {
+			t.Errorf("a row with %s is not without figures", name)
+		}
 	}
 }

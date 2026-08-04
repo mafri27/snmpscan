@@ -2,6 +2,7 @@ package ui
 
 import (
 	"cmp"
+	"math"
 	"slices"
 	"strings"
 
@@ -201,15 +202,19 @@ func natCompare(a, b string) int {
 	return cmp.Compare(len(a)-i, len(b)-j)
 }
 
-// number reads the digit run starting at i and returns its value and the
-// index just past it. Leading zeros are irrelevant to the comparison.
+// number reads the digit run starting at i and returns its value and the index
+// just past it. Leading zeros are irrelevant to the comparison.
 func number(s string, i int) (uint64, int) {
 	var n uint64
 	for ; i < len(s) && isDigit(s[i]); i++ {
-		// Saturate rather than wrap on absurdly long digit runs.
-		if n < 1<<58 {
-			n = n*10 + uint64(s[i]-'0')
+		// Saturate rather than wrap on an absurdly long digit run. Stopping the
+		// accumulation partway instead would leave an arbitrary value, and two
+		// overlong runs could then compare in the wrong order.
+		if n > (math.MaxUint64-uint64(s[i]-'0'))/10 {
+			n = math.MaxUint64
+			continue
 		}
+		n = n*10 + uint64(s[i]-'0')
 	}
 	return n, i
 }

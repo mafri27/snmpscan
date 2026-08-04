@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,7 @@ func TestValidate(t *testing.T) {
 		"-timeout negative": {options{port: 161, sessions: 8, timeout: -time.Second}, nil},
 		"-i 0":              {options{port: 161, sessions: 8, timeout: time.Second, interval: 0}, map[string]bool{"i": true}},
 		"-discover 500ms":   {options{port: 161, sessions: 8, timeout: time.Second, discovery: 500 * time.Millisecond}, map[string]bool{"discover": true}},
+		"-retries negative": {options{port: 161, sessions: 8, timeout: time.Second, retries: -1}, nil},
 	}
 	for name, tc := range cases {
 		if err := validate(tc.opts, tc.given); err == nil {
@@ -102,8 +104,10 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// The usage text is written by hand, so it can fall behind the flags. This is
-// how that goes wrong in practice: a flag added or removed on one side only.
+// The usage text is written by hand, so it can fall behind the flags. Matching
+// has to be per line and on a word boundary: a plain substring search finds "-i"
+// inside "-ignore-broken-configs" and "-c" inside "broken-configs", which left
+// the five most important flags unguarded.
 func TestUsageListsEveryFlag(t *testing.T) {
 	var help bytes.Buffer
 	fs := flag.NewFlagSet("snmpscan", flag.ContinueOnError)
@@ -114,19 +118,32 @@ func TestUsageListsEveryFlag(t *testing.T) {
 	var opts options
 	register(fs, &opts)
 	fs.Usage()
-
 	text := help.String()
+
+	// An alias may share the line with the flag it stands for, so both groups
+	// count. Without that the test would dictate the layout instead of checking
+	// it — "-v, -version" on one line would report -version as undocumented.
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\s+-([\w-]+)(?:,\s*-([\w-]+))?`).FindAllStringSubmatch(text, -1) {
+		documented[m[1]] = true
+		if m[2] != "" {
+			documented[m[2]] = true
+		}
+	}
+
 	fs.VisitAll(func(f *flag.Flag) {
-		if !strings.Contains(text, "-"+f.Name) {
+		if !documented[f.Name] {
 			t.Errorf("flag -%s is registered but missing from the usage text", f.Name)
 		}
 	})
-
-	// And the other way round: nothing documented that no longer exists.
-	for _, name := range []string{"-h", "-c", "-p", "-r", "-i", "-discover", "-a",
-		"-timeout", "-retries", "-sessions", "-maxrep", "-ignore-broken-configs"} {
-		if fs.Lookup(strings.TrimPrefix(name, "-")) == nil {
-			t.Errorf("usage documents %s, which is not a flag any more", name)
+	// And the other way round, from the same extraction rather than a third
+	// hand-kept list: nothing documented that no longer exists.
+	for name := range documented {
+		if name == "help" {
+			continue // provided by the flag package itself
+		}
+		if fs.Lookup(name) == nil {
+			t.Errorf("usage documents -%s, which is not a flag any more", name)
 		}
 	}
 }

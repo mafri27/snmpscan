@@ -255,3 +255,23 @@ func indexOrder(rows []poll.Row) []int {
 	}
 	return out
 }
+
+// An overlong digit run must saturate, not stop accumulating partway: the latter
+// leaves an arbitrary value, and then the shorter of two absurd numbers can
+// compare as the larger one.
+func TestNumberSaturatesInOrder(t *testing.T) {
+	long, _ := number("99999999999999999999999", 0)
+	longer, _ := number("999999999999999999999999999", 0)
+	shorter, _ := number("10000000000000000000000", 0)
+
+	if long != longer {
+		t.Errorf("two overlong runs differ: %d vs %d", long, longer)
+	}
+	if shorter > long {
+		t.Errorf("the smaller number came out larger: %d > %d", shorter, long)
+	}
+	// And the ordinary case is untouched.
+	if n, i := number("00042abc", 0); n != 42 || i != 5 {
+		t.Errorf("number(\"00042abc\") = %d, %d, want 42, 5", n, i)
+	}
+}

@@ -186,6 +186,11 @@ func validate(opts options, given map[string]bool) error {
 	if opts.timeout <= 0 {
 		return fmt.Errorf("-timeout %v must be positive", opts.timeout)
 	}
+	// gosnmp reads a negative count as "send once", which is what 0 means — so
+	// this only ever comes from a typo.
+	if opts.retries < 0 {
+		return fmt.Errorf("-retries %d cannot be negative", opts.retries)
+	}
 	return nil
 }
 
@@ -242,7 +247,7 @@ func usage(fs *flag.FlagSet) func() {
                 are listed as warnings instead of stopping the run
 
   -help         display this help and exit
-  -version      output version information and exit
+  -v, -version  output version information and exit
 
   Configuration is read from %s and *.device in
   /etc/snmpscan, ~/.snmpscan and ./.snmpscan.
