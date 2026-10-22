@@ -36,6 +36,7 @@ type options struct {
 	port         uint
 	community    string
 	filters      stringList
+	hide         stringList
 	interval     int
 	discovery    time.Duration
 	readings     bool
@@ -54,6 +55,7 @@ func register(fs *flag.FlagSet, opts *options) {
 	fs.UintVar(&opts.port, "p", 161, "SNMP port of the target system")
 	fs.StringVar(&opts.community, "c", "", "SNMP community")
 	fs.Var(&opts.filters, "r", "only show interfaces matching this pattern (repeatable)")
+	fs.Var(&opts.hide, "hide", "columns to leave out, comma separated (repeatable)")
 	fs.IntVar(&opts.interval, "i", 0, "seconds between polls, at least 1")
 	fs.DurationVar(&opts.discovery, "discover", 0, "how often to re-read the interface list; negative runs it once at startup")
 	fs.BoolVar(&opts.readings, "a", false, "also show the additional system readings")
@@ -99,6 +101,10 @@ func run() error {
 	if err := validate(opts, given); err != nil {
 		return err
 	}
+	hidden, err := ui.ParseHidden(opts.hide)
+	if err != nil {
+		return fmt.Errorf("-hide: %w", err)
+	}
 
 	set, err := config.Load(config.SearchDirs())
 	if err != nil {
@@ -136,6 +142,7 @@ func run() error {
 		},
 		Config:   set,
 		Filters:  opts.filters,
+		Omit:     ui.Omitted(hidden),
 		Readings: opts.readings,
 		Sessions: opts.sessions,
 		Warnings: warnings,
@@ -152,7 +159,7 @@ func run() error {
 	if given["discover"] {
 		discovery = opts.discovery
 	}
-	err = ui.New(poller, opts.host, interval, discovery).Run(ctx)
+	err = ui.New(poller, opts.host, interval, discovery, hidden).Run(ctx)
 	// The table stays on screen, so give the shell prompt its own line.
 	fmt.Println()
 	return err
@@ -229,6 +236,10 @@ func usage(fs *flag.FlagSet) func() {
   -c            SNMP community
   -p            SNMP port (default 161)
   -r            only show interfaces matching this pattern (repeatable)
+  -hide         columns to leave out, comma separated (repeatable):
+                fresh, ifnr, name, mbps-in, mbps-out, kpps-in, kpps-out,
+                errors, alias, or mbps/kpps for both directions. Hidden
+                counters are not polled, and thresholds on them do not apply
   -i            seconds between polls (default 10, at least 1)
   -discover     how often to re-read the interface list (defaults to -i);
                 runs alongside the polls, not as part of them. A negative

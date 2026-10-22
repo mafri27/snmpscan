@@ -28,21 +28,87 @@ const (
 
 // Column widths carried over from the previous layout, each one short by the
 // separator tview inserts, so the table lines up the same way. The alias has no
-// width of its own — it takes the remaining space.
-var columns = []struct {
-	title string
-	align int
-	width int
-}{
-	colFresh:  {"", tview.AlignLeft, 1},
-	colIfNr:   {"ifNr", tview.AlignLeft, 9},
-	colName:   {"Name", tview.AlignLeft, 29},
-	colIn:     {"Mbps in", tview.AlignRight, 9},
-	colOut:    {"Mbps out", tview.AlignRight, 9},
-	colInPps:  {"Kpps in", tview.AlignRight, 9},
-	colOutPps: {"Kpps out", tview.AlignRight, 9},
-	colErrors: {"Errors", tview.AlignRight, 9},
-	colAlias:  {"Alias", tview.AlignLeft, 0},
+// width of its own — it takes the remaining space. key is the name -hide knows
+// the column by, counter what the poller can skip once it is hidden.
+type column struct {
+	title   string
+	align   int
+	width   int
+	key     string
+	counter *poll.Counter
+}
+
+var columns = []column{
+	colFresh:  {"", tview.AlignLeft, 1, "fresh", nil},
+	colIfNr:   {"ifNr", tview.AlignLeft, 9, "ifnr", nil},
+	colName:   {"Name", tview.AlignLeft, 29, "name", nil},
+	colIn:     {"Mbps in", tview.AlignRight, 9, "mbps-in", counter(poll.InOctets)},
+	colOut:    {"Mbps out", tview.AlignRight, 9, "mbps-out", counter(poll.OutOctets)},
+	colInPps:  {"Kpps in", tview.AlignRight, 9, "kpps-in", counter(poll.InPkts)},
+	colOutPps: {"Kpps out", tview.AlignRight, 9, "kpps-out", counter(poll.OutPkts)},
+	colErrors: {"Errors", tview.AlignRight, 9, "errors", counter(poll.InErrors)},
+	colAlias:  {"Alias", tview.AlignLeft, 0, "alias", nil},
+}
+
+func counter(c poll.Counter) *poll.Counter { return &c }
+
+// columnGroups are shorthands for both directions of a figure.
+var columnGroups = map[string][]int{
+	"mbps": {colIn, colOut},
+	"kpps": {colInPps, colOutPps},
+}
+
+// ParseHidden reads the column names given to -hide. Each entry may hold
+// several, separated by commas.
+func ParseHidden(list []string) (map[int]bool, error) {
+	hidden := map[int]bool{}
+	for _, entry := range list {
+		for name := range strings.SplitSeq(entry, ",") {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name == "" {
+				continue
+			}
+			if group, ok := columnGroups[name]; ok {
+				for _, c := range group {
+					hidden[c] = true
+				}
+				continue
+			}
+			c := slices.IndexFunc(columns, func(col column) bool { return col.key == name })
+			if c < 0 {
+				return nil, fmt.Errorf("unknown column %q, use %s", name, columnNames())
+			}
+			hidden[c] = true
+		}
+	}
+	if len(hidden) == len(columns) {
+		return nil, fmt.Errorf("every column hidden, nothing left to show")
+	}
+	return hidden, nil
+}
+
+func columnNames() string {
+	names := make([]string, 0, len(columns)+len(columnGroups))
+	for _, c := range columns {
+		names = append(names, c.key)
+	}
+	for g := range columnGroups {
+		names = append(names, g)
+	}
+	slices.Sort(names[len(columns):])
+	return strings.Join(names, ", ")
+}
+
+// Omitted lists the counters behind hidden columns, which the poller then
+// does not ask for.
+func Omitted(hidden map[int]bool) map[poll.Counter]bool {
+	omit := map[poll.Counter]bool{}
+	for c := range hidden {
+		if columns[c].counter != nil {
+			omit[*columns[c].counter] = true
+		}
+	}
+	return omit
 }
 
 // What a single run may take before it is abandoned and started over. Not
@@ -83,6 +149,8 @@ type UI struct {
 
 	poller    *poll.Poller
 	host      string
+	hidden    map[int]bool
+	visible   []int // column IDs in display order
 	interval  time.Duration
 	discovery time.Duration
 	refresh   chan struct{}
@@ -102,7 +170,13 @@ type UI struct {
 	order       map[int]int
 }
 
-func New(p *poll.Poller, host string, interval, discovery time.Duration) *UI {
+func New(p *poll.Poller, host string, interval, discovery time.Duration, hidden map[int]bool) *UI {
+	var visible []int
+	for c := range columns {
+		if !hidden[c] {
+			visible = append(visible, c)
+		}
+	}
 	u := &UI{
 		app: tview.NewApplication(),
 		// No wrapping anywhere: these blocks are sized by the number of lines
@@ -114,6 +188,8 @@ func New(p *poll.Poller, host string, interval, discovery time.Duration) *UI {
 		status:    tview.NewTextView().SetDynamicColors(true).SetWrap(false),
 		poller:    p,
 		host:      host,
+		hidden:    hidden,
+		visible:   visible,
 		interval:  interval,
 		discovery: discovery,
 		// Buffered so pressing r never blocks the input handler.
@@ -194,6 +270,9 @@ func (u *UI) onKey(ev *tcell.EventKey) *tcell.EventKey {
 }
 
 func (u *UI) setSort(key SortKey) {
+	if !u.sortable(key) {
+		return
+	}
 	u.mu.Lock()
 	if u.sort.key == key {
 		// Same key again reverses the direction. The remembered ranking turns
@@ -411,6 +490,15 @@ func (u *UI) drawHeader() {
 	u.header.SetText(b.String())
 }
 
+// sortable reports whether a key orders by anything on screen. Name stays
+// available regardless, it is the default order.
+func (u *UI) sortable(key SortKey) bool {
+	if key == SortName {
+		return true
+	}
+	return slices.ContainsFunc(sortedBy(key), func(c int) bool { return !u.hidden[c] })
+}
+
 var sortKeys = []struct {
 	key  SortKey
 	rune rune
@@ -432,6 +520,9 @@ func (u *UI) drawStatus() {
 	const off = "::BU"
 	choices := make([]string, 0, len(sortKeys))
 	for _, s := range sortKeys {
+		if !u.sortable(s.key) {
+			continue
+		}
 		if s.key == active.key {
 			choices = append(choices, fmt.Sprintf("[white::bu]%c", s.rune))
 		} else {
@@ -522,7 +613,7 @@ func (u *UI) drawTable() {
 		styles[i] = classify(row, thresholds)
 	}
 	titles := headerTitles(order)
-	widths := layout(titles, cells, width-leftMargin-rightMargin)
+	widths := layout(u.visible, titles, cells, width-leftMargin-rightMargin)
 
 	// Keep the viewport where the user left it; a refresh must not scroll the
 	// list back to the top.
@@ -532,12 +623,13 @@ func (u *UI) drawTable() {
 
 	u.table.Clear()
 	sorted := sortedBy(order.key)
-	for c, col := range columns {
+	for pos, c := range u.visible {
+		col := columns[c]
 		colour := tcell.ColorTeal
 		if slices.Contains(sorted, c) {
 			colour = tcell.ColorWhite
 		}
-		u.table.SetCell(0, c, tview.NewTableCell(tview.Escape(pad(titles[c], widths[c], col.align))).
+		u.table.SetCell(0, pos, tview.NewTableCell(tview.Escape(pad(titles[c], widths[c], col.align))).
 			SetTextColor(colour).
 			SetAttributes(tcell.AttrBold).
 			SetAlign(col.align).
@@ -547,18 +639,18 @@ func (u *UI) drawTable() {
 
 	for i, values := range cells {
 		colour := styleColor(styles[i])
-		for c, v := range values {
-			cell := tview.NewTableCell(tview.Escape(pad(v, widths[c], columns[c].align))).
+		for pos, c := range u.visible {
+			cell := tview.NewTableCell(tview.Escape(pad(values[c], widths[c], columns[c].align))).
 				SetTextColor(colour).
 				SetSelectedStyle(selectedStyle(colour)).
 				SetAlign(columns[c].align).
 				SetExpansion(expansion(c))
-			if c == colFresh {
+			if pos == 0 {
 				// What the row is, as opposed to where it sits — this is how
 				// the selection finds its interface again after a re-sort.
 				cell.SetReference(rows[i].Index)
 			}
-			u.table.SetCell(i+1, c, cell)
+			u.table.SetCell(i+1, pos, cell)
 		}
 	}
 
@@ -579,7 +671,7 @@ func (u *UI) drawTable() {
 // selectedIndex is the ifIndex of the row the cursor is on, or -1 when there
 // is nothing selected yet.
 func selectedIndex(t *tview.Table, row int) int {
-	cell := t.GetCell(row, colFresh)
+	cell := t.GetCell(row, 0)
 	if cell == nil {
 		return -1
 	}
@@ -650,7 +742,7 @@ func arrow(desc bool) string {
 
 // expansion lets the alias soak up whatever width is left over.
 func expansion(col int) int {
-	if col == len(columns)-1 {
+	if columns[col].width == 0 {
 		return 1
 	}
 	return 0

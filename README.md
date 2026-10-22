@@ -64,6 +64,7 @@ does not fail the poll: what arrived is shown, the rest keeps its old values.
 |---|---|
 | `-h` `-c` `-p` | host, community, port (161) |
 | `-r` | only interfaces matching this pattern; repeatable, replaces the profile's filter |
+| `-hide` | columns to leave out, comma separated, repeatable; see below |
 | `-i` | seconds between polls (10, at least 1) |
 | `-discover` | how often to re-read the interface list (same as `-i`); negative walks once at startup |
 | `-a` | show the extra readings |
@@ -71,6 +72,16 @@ does not fail the poll: what arrived is shown, the rest keeps its old values.
 | `-sessions` | parallel conversations (8, max 64) |
 | `-maxrep` | GETBULK max-repetitions (10) |
 | `-ignore-broken-configs` | start even when a config file does not parse |
+
+`-hide` takes `fresh` `ifnr` `name` `mbps-in` `mbps-out` `kpps-in` `kpps-out`
+`errors` `alias`, or `mbps` and `kpps` for both directions. A hidden counter is
+not polled at all — fewer varbinds per request — so its thresholds no longer
+apply either: `-hide errors` means no row turns red for errors. A sort key with
+nothing left on screen drops out of the footer.
+
+```
+snmpscan -c <community> -h <host> -hide ifnr,kpps -hide errors
+```
 
 ## Configuration
 

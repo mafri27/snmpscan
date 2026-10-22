@@ -113,25 +113,31 @@ const minAliasWidth = 12
 // as much as the alias is short, taken from wherever the most space is going
 // unused — they do not collapse onto their content all at once.
 // A width of zero means "take whatever is left", which is the alias column.
-func layout(titles []string, cells [][]string, total int) []int {
-	fixedCols := len(columns) - 1
+// Only the visible columns take part; the hidden ones stay at zero.
+func layout(visible []int, titles []string, cells [][]string, total int) []int {
 	widths := make([]int, len(columns))
 
-	need := max(contentWidth(titles, cells, len(columns)-1), minAliasWidth)
-	for i := range fixedCols {
-		widths[i] = columns[i].width
-		need += widths[i] + 1 // + the separator tview draws between columns
+	var fixed []int
+	need := 0
+	for _, c := range visible {
+		if columns[c].width == 0 {
+			need += max(contentWidth(titles, cells, c), minAliasWidth)
+			continue
+		}
+		fixed = append(fixed, c)
+		widths[c] = columns[c].width
+		need += widths[c] + 1 // + the separator tview draws between columns
 	}
 	if total <= 0 || need <= total {
 		return widths
 	}
 
-	content := make([]int, fixedCols)
-	slack := make([]int, fixedCols)
+	content := make([]int, len(fixed))
+	slack := make([]int, len(fixed))
 	totalSlack := 0
-	for i := range fixedCols {
-		content[i] = min(contentWidth(titles, cells, i), widths[i])
-		slack[i] = widths[i] - content[i]
+	for i, c := range fixed {
+		content[i] = min(contentWidth(titles, cells, c), widths[c])
+		slack[i] = widths[c] - content[i]
 		totalSlack += slack[i]
 	}
 	if totalSlack == 0 {
@@ -140,16 +146,19 @@ func layout(titles []string, cells [][]string, total int) []int {
 
 	deficit := min(need-total, totalSlack)
 	taken := 0
-	for i := range fixedCols {
+	for i, c := range fixed {
 		t := slack[i] * deficit / totalSlack
-		widths[i] -= t
+		widths[c] -= t
 		taken += t
 	}
 	// Integer division leaves a remainder of less than one column; take it one
 	// character at a time. Bounded so a miscalculation cannot hang the redraw.
-	for i := 0; i < fixedCols && taken < deficit; i++ {
-		if widths[i] > content[i] {
-			widths[i]--
+	for i, c := range fixed {
+		if taken >= deficit {
+			break
+		}
+		if widths[c] > content[i] {
+			widths[c]--
 			taken++
 		}
 	}

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/mafri27/snmpscan/internal/config"
@@ -102,7 +103,7 @@ func TestFormatIndex(t *testing.T) {
 func TestLayoutKeepsFixedWidthsWhenTheAliasFits(t *testing.T) {
 	cells := [][]string{{"•", "1", "xe-0/0/0", "5", "5", "1", "1", "0", "uplink"}}
 
-	got := layout(plainTitles(), cells, 200)
+	got := layout(allColumns(), plainTitles(), cells, 200)
 
 	for i, col := range columns[:len(columns)-1] {
 		if got[i] != col.width {
@@ -124,8 +125,8 @@ func TestLayoutFreesRoomBeforeCuttingTheAlias(t *testing.T) {
 		{"•", "519", "et-0/0/101", "3037", "4901", "295", "429", "0", alias},
 	}
 
-	total := usedWidth(layout(plainTitles(), cells, 10_000)) + len(alias) - 10
-	got := layout(plainTitles(), cells, total)
+	total := usedWidth(layout(allColumns(), plainTitles(), cells, 10_000)) + len(alias) - 10
+	got := layout(allColumns(), plainTitles(), cells, total)
 
 	if left := total - usedWidth(got); left < len(alias) {
 		t.Errorf("%d characters left for a %d character alias", left, len(alias))
@@ -146,9 +147,9 @@ func TestLayoutShrinksOnlyAsFarAsTheAliasNeeds(t *testing.T) {
 	cells := [][]string{{"•", "1", "xe-0/0/0", "5", "5", "1", "1", "0", "uplink"}}
 
 	// Ten characters short of what the layout wants when space is plentiful.
-	roomy := usedWidth(layout(plainTitles(), cells, 10_000))
+	roomy := usedWidth(layout(allColumns(), plainTitles(), cells, 10_000))
 	total := roomy + minAliasWidth - 10
-	got := layout(plainTitles(), cells, total)
+	got := layout(allColumns(), plainTitles(), cells, total)
 
 	if used := usedWidth(got); used+minAliasWidth > total {
 		t.Errorf("columns use %d of %d, leaving less than %d for the alias", used, total, minAliasWidth)
@@ -168,7 +169,7 @@ func TestLayoutShrinksOnlyAsFarAsTheAliasNeeds(t *testing.T) {
 func TestLayoutBottomsOutAtTheContentWidth(t *testing.T) {
 	cells := [][]string{{"•", "1", "xe-0/0/0", "5", "5", "1", "1", "0", "uplink"}}
 
-	got := layout(plainTitles(), cells, 40)
+	got := layout(allColumns(), plainTitles(), cells, 40)
 
 	// Nothing may shrink past what its widest entry needs, header included.
 	for i, col := range columns[:len(columns)-1] {
@@ -198,7 +199,7 @@ func usedWidth(widths []int) int {
 func TestLayoutWithoutAKnownWidth(t *testing.T) {
 	// Before the first draw the terminal size is unknown; the fixed layout is
 	// the right guess.
-	got := layout(plainTitles(), nil, 0)
+	got := layout(allColumns(), plainTitles(), nil, 0)
 	if got[0] != columns[0].width {
 		t.Errorf("column 0 = %d, want the fixed %d", got[0], columns[0].width)
 	}
@@ -251,5 +252,52 @@ func TestPadTruncatesWideCharactersByColumn(t *testing.T) {
 	}
 	if got := pad("日本語", 6, tview.AlignLeft); got != "日本語" {
 		t.Errorf("pad at exactly the width changed the string: %q", got)
+	}
+}
+
+func allColumns() []int {
+	out := make([]int, len(columns))
+	for i := range columns {
+		out[i] = i
+	}
+	return out
+}
+
+// Without the alias nothing takes the rest of the line, so the fixed columns
+// keep their widths and the hidden one gets none.
+func TestLayoutWithoutTheAlias(t *testing.T) {
+	cells := [][]string{{"•", "1", "xe-0/0/0", "5", "5", "1", "1", "0", "uplink"}}
+	visible := []int{colFresh, colName, colIn, colOut}
+
+	got := layout(visible, plainTitles(), cells, 200)
+
+	for c, col := range columns {
+		want := 0
+		if slices.Contains(visible, c) {
+			want = col.width
+		}
+		if got[c] != want {
+			t.Errorf("column %q = %d, want %d", col.title, got[c], want)
+		}
+	}
+}
+
+// A hidden column frees its width for the alias: a terminal that would squeeze
+// the full table leaves the rest untouched once the errors are gone.
+func TestLayoutHiddenColumnMakesRoom(t *testing.T) {
+	const alias = "hel1-cloud1-spine3_rdev1 - 1"
+	cells := [][]string{{"•", "1069", "et-0/0/100", "2802", "5353", "282", "467", "0", alias}}
+	visible := slices.DeleteFunc(allColumns(), func(c int) bool { return c == colErrors })
+
+	total := usedWidth(layout(allColumns(), plainTitles(), cells, 10_000)) + len(alias) - 5
+	got := layout(visible, plainTitles(), cells, total)
+
+	for _, c := range visible {
+		if columns[c].width != 0 && got[c] != columns[c].width {
+			t.Errorf("column %q = %d, want the fixed %d", columns[c].title, got[c], columns[c].width)
+		}
+	}
+	if got[colErrors] != 0 {
+		t.Errorf("hidden errors column = %d, want 0", got[colErrors])
 	}
 }

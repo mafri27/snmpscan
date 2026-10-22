@@ -967,3 +967,35 @@ func TestNoFiguresCountsEveryColumn(t *testing.T) {
 		}
 	}
 }
+
+// An omitted counter takes the vendor's per-second object along with it: hiding
+// a column has to save the requests, not just the standard OID.
+func TestCounterColumnsLeaveOutOmitted(t *testing.T) {
+	p := &Poller{
+		profile: config.Profile{InSecOctOID: "1.2.3", InSecPpsOID: "1.2.4"},
+		omit:    map[Counter]bool{InOctets: true, OutPkts: true, InErrors: true},
+	}
+
+	var got []string
+	for _, c := range p.counterColumns() {
+		got = append(got, c.base)
+	}
+
+	want := []string{oidIfHCOutOctets, oidIfInUcastPkts, "1.2.4"}
+	if !slices.Equal(got, want) {
+		t.Errorf("columns = %v, want %v", got, want)
+	}
+}
+
+// Nothing to fetch must mean no requests at all. The poller here has no pool,
+// so reaching for a session would panic.
+func TestReadCountersWithoutColumnsSendsNothing(t *testing.T) {
+	p := &Poller{}
+	st := &state{ifaces: []iface{{index: 1}, {index: 2}}}
+	st.raw = make([]counters, len(st.ifaces))
+	st.done = make([]bool, len(st.ifaces))
+
+	if err := p.readCounters(t.Context(), st, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}

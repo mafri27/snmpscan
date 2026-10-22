@@ -63,11 +63,26 @@ type Snapshot struct {
 	Complete bool
 }
 
+// Counter names one of the figures a row carries, so a caller can leave it out
+// of the poll.
+type Counter int
+
+const (
+	InOctets Counter = iota
+	OutOctets
+	InPkts
+	OutPkts
+	InErrors
+)
+
 type Options struct {
 	Target Target
 	Config *config.Set
 	// Filters replaces the profile's default_filter when not empty.
 	Filters []string
+	// Omit lists counters nobody looks at. They are not requested at all, the
+	// vendor's per-second objects included, so the row keeps them nil.
+	Omit map[Counter]bool
 	// Readings includes the profile's extra readings (temperature, alarms).
 	// Off by default; they take screen rows away from the interface table.
 	Readings bool
@@ -88,6 +103,7 @@ type Poller struct {
 	batchSize int
 	warnings  []string
 	readings  bool
+	omit      map[Counter]bool
 
 	sent         atomic.Int64
 	prev         map[int]counters
@@ -192,6 +208,7 @@ func New(ctx context.Context, opts Options) (*Poller, error) {
 
 	p.profile = opts.Config.Match(p.sysDescr)
 	p.readings = opts.Readings
+	p.omit = opts.Omit
 	if !opts.Readings {
 		p.profile.AddInfos = nil
 	}
@@ -611,24 +628,24 @@ func (p *Poller) matches(name, alias string) bool {
 }
 
 // counterColumns lists the table columns to fetch per interface. The vendor
-// specific per-second objects are appended only when the profile has them.
+// specific per-second objects are appended only when the profile has them, and
+// nothing is fetched for a counter that is omitted.
 func (p *Poller) counterColumns() []column {
-	cols := []column{
-		{oidIfHCInOctets, func(c *counters, v value) { c.inOct = v }},
-		{oidIfHCOutOctets, func(c *counters, v value) { c.outOct = v }},
-		{oidIfInUcastPkts, func(c *counters, v value) { c.inPkt = v }},
-		{oidIfOutUcastPkt, func(c *counters, v value) { c.outPkt = v }},
-		{oidIfInErrors, func(c *counters, v value) { c.errIn = v }},
-	}
-	add := func(oid string, set func(*counters, value)) {
-		if oid != "" {
+	var cols []column
+	add := func(counter Counter, oid string, set func(*counters, value)) {
+		if oid != "" && !p.omit[counter] {
 			cols = append(cols, column{oid, set})
 		}
 	}
-	add(p.profile.InSecOctOID, func(c *counters, v value) { c.secInOct = v })
-	add(p.profile.OutSecOctOID, func(c *counters, v value) { c.secOutOct = v })
-	add(p.profile.InSecPpsOID, func(c *counters, v value) { c.secInPkt = v })
-	add(p.profile.OutSecPpsOID, func(c *counters, v value) { c.secOutPkt = v })
+	add(InOctets, oidIfHCInOctets, func(c *counters, v value) { c.inOct = v })
+	add(OutOctets, oidIfHCOutOctets, func(c *counters, v value) { c.outOct = v })
+	add(InPkts, oidIfInUcastPkts, func(c *counters, v value) { c.inPkt = v })
+	add(OutPkts, oidIfOutUcastPkt, func(c *counters, v value) { c.outPkt = v })
+	add(InErrors, oidIfInErrors, func(c *counters, v value) { c.errIn = v })
+	add(InOctets, p.profile.InSecOctOID, func(c *counters, v value) { c.secInOct = v })
+	add(OutOctets, p.profile.OutSecOctOID, func(c *counters, v value) { c.secOutOct = v })
+	add(InPkts, p.profile.InSecPpsOID, func(c *counters, v value) { c.secInPkt = v })
+	add(OutPkts, p.profile.OutSecPpsOID, func(c *counters, v value) { c.secOutPkt = v })
 	return cols
 }
 
@@ -683,7 +700,9 @@ func assign(st *state, cols []column, where map[string]cell, res *gosnmp.SnmpPac
 // only, so a response always completes the rows it covers.
 // onBatch is called after each response with st.mu held, so it may read st.
 func (p *Poller) readCounters(ctx context.Context, st *state, cols []column, onBatch func()) error {
-	if len(st.ifaces) == 0 {
+	// With every counter omitted batchInterfaces would still cut one empty GET
+	// per interface.
+	if len(st.ifaces) == 0 || len(cols) == 0 {
 		return nil
 	}
 
