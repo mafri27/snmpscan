@@ -27,7 +27,8 @@ const (
 )
 
 // Column widths carried over from the previous layout, each one short by the
-// separator tview inserts, so the table lines up the same way. The alias has no
+// separator tview inserts, so the table lines up the same way — except Mbps out,
+// one wider so its title still fits with the sort arrow. The alias has no
 // width of its own — it takes the remaining space. key is the name -hide knows
 // the column by, counter what the poller can skip once it is hidden.
 type column struct {
@@ -43,7 +44,7 @@ var columns = []column{
 	colIfNr:   {"ifNr", tview.AlignLeft, 9, "ifnr", nil},
 	colName:   {"Name", tview.AlignLeft, 29, "name", nil},
 	colIn:     {"Mbps in", tview.AlignRight, 9, "mbps-in", counter(poll.InOctets)},
-	colOut:    {"Mbps out", tview.AlignRight, 9, "mbps-out", counter(poll.OutOctets)},
+	colOut:    {"Mbps out", tview.AlignRight, 10, "mbps-out", counter(poll.OutOctets)},
 	colInPps:  {"Kpps in", tview.AlignRight, 9, "kpps-in", counter(poll.InPkts)},
 	colOutPps: {"Kpps out", tview.AlignRight, 9, "kpps-out", counter(poll.OutPkts)},
 	colErrors: {"Errors", tview.AlignRight, 9, "errors", counter(poll.InErrors)},
@@ -256,7 +257,7 @@ func (u *UI) onKey(ev *tcell.EventKey) *tcell.EventKey {
 			u.setSort(SortName)
 			return nil
 		case 't', 'T':
-			u.setSort(SortTraffic)
+			u.changeSort(func(cur sortOrder) sortOrder { return nextTraffic(cur, u.sortable) })
 			return nil
 		case 'e', 'E':
 			u.setSort(SortErrors)
@@ -273,18 +274,30 @@ func (u *UI) setSort(key SortKey) {
 	if !u.sortable(key) {
 		return
 	}
+	u.changeSort(func(cur sortOrder) sortOrder {
+		// Same key again reverses the direction.
+		if cur.key == key {
+			return cur.reversed()
+		}
+		return defaultOrder(key)
+	})
+}
+
+func (u *UI) changeSort(next func(sortOrder) sortOrder) {
 	u.mu.Lock()
-	if u.sort.key == key {
-		// Same key again reverses the direction. The remembered ranking turns
-		// over with it so an unstable sort flips right away.
-		u.sort = u.sort.reversed()
+	n := next(u.sort)
+	switch {
+	case n == u.sort:
+	case n.key == u.sort.key:
+		// The remembered ranking turns over with the direction so an unstable
+		// sort flips right away.
 		u.order = reverseRanking(u.order)
-	} else {
-		u.sort = defaultOrder(key)
+	default:
 		// A new unstable key has no ranking until a poll finishes; drop the
 		// old one rather than keeping a meaningless arrangement.
 		u.order = nil
 	}
+	u.sort = n
 	u.mu.Unlock()
 
 	u.drawStatus()
@@ -490,13 +503,31 @@ func (u *UI) drawHeader() {
 	u.header.SetText(b.String())
 }
 
-// sortable reports whether a key orders by anything on screen. Name stays
+// sortable reports whether everything a key orders by is on screen: a sum
+// with one half hidden would rank by figures nobody can see. Name stays
 // available regardless, it is the default order.
 func (u *UI) sortable(key SortKey) bool {
 	if key == SortName {
 		return true
 	}
-	return slices.ContainsFunc(sortedBy(key), func(c int) bool { return !u.hidden[c] })
+	return !slices.ContainsFunc(sortedBy(key), func(c int) bool { return u.hidden[c] })
+}
+
+// offered reports whether a key belongs in the footer. t stands for the whole
+// traffic cycle, so it stays as long as any step of it is left.
+func (u *UI) offered(key SortKey) bool {
+	if key == SortTraffic {
+		return slices.ContainsFunc(trafficCycle, func(o sortOrder) bool { return u.sortable(o.key) })
+	}
+	return u.sortable(key)
+}
+
+// button is the key in the footer that a sort order is reached by.
+func button(key SortKey) SortKey {
+	if key == SortIn || key == SortOut {
+		return SortTraffic
+	}
+	return key
 }
 
 var sortKeys = []struct {
@@ -520,10 +551,10 @@ func (u *UI) drawStatus() {
 	const off = "::BU"
 	choices := make([]string, 0, len(sortKeys))
 	for _, s := range sortKeys {
-		if !u.sortable(s.key) {
+		if !u.offered(s.key) {
 			continue
 		}
-		if s.key == active.key {
+		if s.key == button(active.key) {
 			choices = append(choices, fmt.Sprintf("[white::bu]%c", s.rune))
 		} else {
 			choices = append(choices, fmt.Sprintf("[gray%s]%c", off, s.rune))

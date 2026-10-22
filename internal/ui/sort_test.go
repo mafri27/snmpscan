@@ -275,3 +275,82 @@ func TestNumberSaturatesInOrder(t *testing.T) {
 		t.Errorf("number(\"00042abc\") = %d, %d, want 42, 5", n, i)
 	}
 }
+
+// One direction alone can rank the other way round than the sum does.
+func TestSortByOneDirection(t *testing.T) {
+	rows := []poll.Row{
+		{Index: 1, Name: "xe-0/0/1", InOctets: i64(900), OutOctets: i64(0)},
+		{Index: 2, Name: "xe-0/0/2", InOctets: i64(100), OutOctets: i64(500)},
+		{Index: 3, Name: "xe-0/0/3", InOctets: i64(500), OutOctets: i64(900)},
+	}
+
+	for _, tc := range []struct {
+		key  SortKey
+		want []int
+	}{
+		{SortTraffic, []int{3, 1, 2}},
+		{SortIn, []int{1, 3, 2}},
+		{SortOut, []int{3, 2, 1}},
+	} {
+		got, _ := sortRows(rows, defaultOrder(tc.key), true, nil)
+		if !reflect.DeepEqual(indexes(got), tc.want) {
+			t.Errorf("%v: order = %v, want %v", tc.key, indexes(got), tc.want)
+		}
+	}
+}
+
+func TestTrafficCycle(t *testing.T) {
+	all := func(SortKey) bool { return true }
+	want := []sortOrder{
+		{SortTraffic, true}, {SortTraffic, false},
+		{SortIn, true}, {SortIn, false},
+		{SortOut, true}, {SortOut, false},
+		{SortTraffic, true},
+	}
+
+	cur := defaultOrder(SortName)
+	for i, w := range want {
+		cur = nextTraffic(cur, all)
+		if cur != w {
+			t.Fatalf("press %d: %v desc=%v, want %v desc=%v", i+1, cur.key, cur.desc, w.key, w.desc)
+		}
+	}
+}
+
+// With mbps-in hidden only Out is left to sort by: the sum would rank by a
+// figure that is not on screen.
+func TestTrafficCycleSkipsWhatIsHidden(t *testing.T) {
+	u := &UI{hidden: map[int]bool{colIn: true}}
+
+	cur := defaultOrder(SortName)
+	for i, w := range []sortOrder{{SortOut, true}, {SortOut, false}, {SortOut, true}} {
+		cur = nextTraffic(cur, u.sortable)
+		if cur != w {
+			t.Fatalf("press %d: %v desc=%v, want %v desc=%v", i+1, cur.key, cur.desc, w.key, w.desc)
+		}
+	}
+	if !u.offered(SortTraffic) {
+		t.Error("t has a step left and belongs in the footer")
+	}
+
+	u.hidden[colOut] = true
+	if u.offered(SortTraffic) {
+		t.Error("with both directions hidden t has nothing left to do")
+	}
+	if got := nextTraffic(defaultOrder(SortName), u.sortable); got != defaultOrder(SortName) {
+		t.Errorf("nothing sortable must leave the order alone, got %v", got.key)
+	}
+}
+
+// The arrow used to fall off "Mbps out": with it the title is one wider than
+// the column was, and pad cut it off.
+func TestSortArrowFitsEveryTitle(t *testing.T) {
+	for _, k := range []SortKey{SortName, SortTraffic, SortErrors, SortAlias, SortIn, SortOut} {
+		titles := headerTitles(defaultOrder(k))
+		for _, c := range sortedBy(k) {
+			if w := columns[c].width; w > 0 && visibleLen(titles[c]) > w {
+				t.Errorf("%v: %q is %d wide, column only %d", k, titles[c], visibleLen(titles[c]), w)
+			}
+		}
+	}
+}

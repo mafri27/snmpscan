@@ -18,7 +18,7 @@ import (
 	"github.com/mafri27/snmpscan/internal/ui"
 )
 
-const version = "2.1.0"
+const version = "2.1.1"
 
 // maxSessions is a sanity limit, not a tuned one: every session dials its own
 // UDP socket at startup, so an absurd -sessions would fail on the fd limit with

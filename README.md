@@ -5,11 +5,11 @@ Live interface rates of a router or switch, in a scrollable terminal table.
 ```
  System: 2001:db8::1   Sysname: sw01   CPU: 41 2   172 ports   reload in 7s   (37 req, 473ms)
 
-   ifNr      Name ▲                          Mbps in  Mbps out   Kpps in  Kpps out    Errors Alias
- • 1069      et-0/0/100                         4279      4274       399       381         0 core01_re0 - 1
- • 519       et-0/0/101                         5052      4493       463       400         0 core02_re0 - 2
- • 887       xe-0/0/0                            543       452        24        26         0
-   888       xe-0/0/1                            766       484        32        28         0
+   ifNr      Name ▲                          Mbps in   Mbps out   Kpps in  Kpps out    Errors Alias
+ • 1069      et-0/0/100                         4279       4274       399       381         0 core01_re0 - 1
+ • 519       et-0/0/101                         5052       4493       463       400         0 core02_re0 - 2
+ • 887       xe-0/0/0                            543        452        24        26         0
+   888       xe-0/0/1                            766        484        32        28         0
 
  q quit   r refresh   sort n/t/e/a ▲   ↑↓ PgUp PgDn scroll   1-19 of 172
 ```
@@ -24,9 +24,10 @@ binary in `$(PREFIX)/bin` and the profiles in `/etc/snmpscan`.
 ## Keys
 
 `q` quits and leaves the table on screen. `r` polls now. Arrows and PgUp/PgDn
-scroll. `n` `t` `e` `a` sort by name, traffic, errors or alias — same key again
-reverses. The sorted column is marked in the header, the active key underlined
-below.
+scroll. `n` `e` `a` sort by name, errors or alias — same key again reverses. `t`
+steps through traffic: in and out together, then in alone, then out alone, each
+busiest first and then reversed. The sorted column is marked in the header, the
+active key underlined below. A key whose column is hidden with `-hide` drops out.
 
 The cursor follows its interface through a re-sort, not the line number. Traffic
 and errors re-rank only when a poll completes, so rows do not jump while counters

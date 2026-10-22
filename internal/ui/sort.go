@@ -15,12 +15,15 @@ type SortKey int
 const (
 	// SortName orders by port name, numerically aware.
 	SortName SortKey = iota
-	// SortTraffic puts the busiest ports first.
+	// SortTraffic puts the busiest ports first, by in and out together.
 	SortTraffic
 	// SortErrors puts the most erroring ports first.
 	SortErrors
 	// SortAlias orders by the interface description.
 	SortAlias
+	// SortIn and SortOut rank by one direction only.
+	SortIn
+	SortOut
 )
 
 func (k SortKey) String() string {
@@ -31,6 +34,10 @@ func (k SortKey) String() string {
 		return "errors"
 	case SortAlias:
 		return "alias"
+	case SortIn:
+		return "traffic in"
+	case SortOut:
+		return "traffic out"
 	default:
 		return "name"
 	}
@@ -50,7 +57,7 @@ type sortOrder struct {
 // defaultOrder is how a key sorts when it is first selected: busiest and most
 // broken first, names and aliases from A to Z.
 func defaultOrder(k SortKey) sortOrder {
-	return sortOrder{key: k, desc: k == SortTraffic || k == SortErrors}
+	return sortOrder{key: k, desc: !k.stable()}
 }
 
 // reversed flips the direction, which is what pressing the same key twice does.
@@ -59,12 +66,37 @@ func (o sortOrder) reversed() sortOrder {
 	return o
 }
 
+// trafficCycle is what t steps through: the sum, then each direction alone,
+// every one busiest first and then the other way round.
+var trafficCycle = []sortOrder{
+	{SortTraffic, true}, {SortTraffic, false},
+	{SortIn, true}, {SortIn, false},
+	{SortOut, true}, {SortOut, false},
+}
+
+// nextTraffic is the step after cur, skipping what sortable rules out. From
+// any other key it starts at the top. With nothing sortable cur stays.
+func nextTraffic(cur sortOrder, sortable func(SortKey) bool) sortOrder {
+	i := slices.Index(trafficCycle, cur)
+	for step := 1; step <= len(trafficCycle); step++ {
+		next := trafficCycle[(i+step+len(trafficCycle))%len(trafficCycle)]
+		if sortable(next.key) {
+			return next
+		}
+	}
+	return cur
+}
+
 // sortedBy lists the table columns a key orders by. Traffic covers both
 // directions, since it ranks on their sum.
 func sortedBy(k SortKey) []int {
 	switch k {
 	case SortTraffic:
 		return []int{colIn, colOut}
+	case SortIn:
+		return []int{colIn}
+	case SortOut:
+		return []int{colOut}
 	case SortErrors:
 		return []int{colErrors}
 	case SortAlias:
@@ -115,9 +147,14 @@ func stableCompare(key SortKey) func(a, b poll.Row) int {
 func unstableCompare(key SortKey) func(a, b poll.Row) int {
 	return func(a, b poll.Row) int {
 		var c int
-		if key == SortErrors {
+		switch key {
+		case SortErrors:
 			c = cmp.Compare(deref(a.InErrors), deref(b.InErrors))
-		} else {
+		case SortIn:
+			c = cmp.Compare(deref(a.InOctets), deref(b.InOctets))
+		case SortOut:
+			c = cmp.Compare(deref(a.OutOctets), deref(b.OutOctets))
+		default:
 			c = cmp.Compare(traffic(a), traffic(b))
 		}
 		return cmp.Or(c, byName(a, b))
